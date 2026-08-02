@@ -139,6 +139,17 @@ export default function DetailPage({ projectId, onBack, addToast, onRefresh }) {
     finally { setBusy(false); }
   };
 
+  // 仮スケ設定済みの案件について、管理者から営業担当へ日程確定の催促メールを送信
+  const handleRemindConfirm = async () => {
+    if (!confirm(`${project.sales_rep}さんへ日程確定の催促メールを送信しますか？`)) return;
+    setBusy(true);
+    try {
+      await api.sendConfirmReminder(projectId);
+      addToast('催促メールを送信しました');
+    } catch (err) { addToast(err.message, 'error'); }
+    finally { setBusy(false); }
+  };
+
   // 確定済み案件のCS担当者を変更（管理者専用・変更通知メール送信）
   const handleUpdateConfirmedCs = async (names) => {
     if (!names.length) { addToast('CS担当者を1名以上選択してください', 'error'); return; }
@@ -293,6 +304,8 @@ export default function DetailPage({ projectId, onBack, addToast, onRefresh }) {
   const canConfirm = hasAnyCandidates && (isOwner || isAdmin) && !isCancelled && !isConfirmed && !isDelivered;
   // リマインドは営業担当が管理者へ候補日設定を促すための機能なので、営業（担当者）のみ
   const canRemind = isPending && isOwner && !isAdmin;
+  // 仮スケ設定済みの案件について、管理者が営業担当へ日程確定を催促できる
+  const canRemindConfirm = isScheduled && isAdmin && hasAnyCandidates;
   const canCancel = !isCancelled && !isDelivered;
 
   const cands = project.candidates || [];
@@ -743,6 +756,12 @@ export default function DetailPage({ projectId, onBack, addToast, onRefresh }) {
           <button className="btn btn-ghost btn-full" onClick={handleRemind} disabled={busy}
             style={{ borderColor:'var(--warning)',color:'var(--warning)' }}>
             🔔 リマインドを送信（CS部管理者・自身へメール）
+          </button>
+        )}
+        {canRemindConfirm && (
+          <button className="btn btn-ghost btn-full" onClick={handleRemindConfirm} disabled={busy}
+            style={{ borderColor:'var(--accent-lt)',color:'var(--accent-lt)' }}>
+            🔔 {project.sales_rep}さんへ日程確定を催促
           </button>
         )}
         {canCancel && !isCancelled && (

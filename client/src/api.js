@@ -52,6 +52,7 @@ export const api = {
   updateConfirmedCsMembers: (id, cs_members) => req('PUT', `/projects/${id}/cs-members`, { cs_members }),
   cancelProject: (id, data) => req('POST', `/projects/${id}/cancel`, data),
   sendReminder: (id, requesterLoginId) => req('POST', `/projects/${id}/remind`, { requester_login_id: requesterLoginId }),
+  sendConfirmReminder: (id) => req('POST', `/projects/${id}/remind-confirm`),
   deleteProject: (id, requesterLoginId) => req('DELETE', `/projects/${id}${requesterLoginId ? `?requester_login_id=${encodeURIComponent(requesterLoginId)}` : ''}`),
   bulkDeleteProjects: (ids, requesterLoginId) => req('POST', '/projects/bulk-delete', { ids, requester_login_id: requesterLoginId }),
   deleteProjectsByStatus: (status, requesterLoginId) => req('POST', '/projects/delete-by-status', { status, requester_login_id: requesterLoginId }),

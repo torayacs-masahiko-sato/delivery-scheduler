@@ -142,9 +142,33 @@ export default function DashboardPage({ onNavigate }) {
       {user.role === 'admin' && (
         <div className="stats-grid">
           <div className="stat-card"><div className="stat-value">{stats.total ?? '—'}</div><div className="stat-label">総案件数</div></div>
-          <div className="stat-card"><div className="stat-value" style={{ color: 'var(--warning)' }}>{stats.pending ?? '—'}</div><div className="stat-label">候補日待ち</div></div>
-          <div className="stat-card"><div className="stat-value" style={{ color: 'var(--accent-lt)' }}>{stats.scheduled ?? '—'}</div><div className="stat-label">仮スケ設定済</div></div>
-          <div className="stat-card"><div className="stat-value" style={{ color: 'var(--success)' }}>{stats.confirmed ?? '—'}</div><div className="stat-label">確定済み</div></div>
+          <div
+            className="stat-card"
+            role="button" tabIndex={0}
+            onClick={() => setStatusFilter('pending')}
+            onKeyDown={e => { if (e.key === 'Enter') setStatusFilter('pending'); }}
+            style={{ cursor: 'pointer', outline: statusFilter === 'pending' ? '2px solid var(--warning)' : 'none' }}
+          >
+            <div className="stat-value" style={{ color: 'var(--warning)' }}>{stats.pending ?? '—'}</div><div className="stat-label">候補日待ち</div>
+          </div>
+          <div
+            className="stat-card"
+            role="button" tabIndex={0}
+            onClick={() => setStatusFilter('scheduled')}
+            onKeyDown={e => { if (e.key === 'Enter') setStatusFilter('scheduled'); }}
+            style={{ cursor: 'pointer', outline: statusFilter === 'scheduled' ? '2px solid var(--accent-lt)' : 'none' }}
+          >
+            <div className="stat-value" style={{ color: 'var(--accent-lt)' }}>{stats.scheduled ?? '—'}</div><div className="stat-label">仮スケ設定済</div>
+          </div>
+          <div
+            className="stat-card"
+            role="button" tabIndex={0}
+            onClick={() => setStatusFilter('confirmed')}
+            onKeyDown={e => { if (e.key === 'Enter') setStatusFilter('confirmed'); }}
+            style={{ cursor: 'pointer', outline: statusFilter === 'confirmed' ? '2px solid var(--success)' : 'none' }}
+          >
+            <div className="stat-value" style={{ color: 'var(--success)' }}>{stats.confirmed ?? '—'}</div><div className="stat-label">確定済み</div>
+          </div>
         </div>
       )}
 
