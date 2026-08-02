@@ -231,6 +231,23 @@ CS担当者：{{cs_members}}
 
 ▼ 下のボタンからこの案件をすぐに確認できます（ログイン後、自動でこの案件が開きます）`
   },
+  confirm_reminder: {
+    subject: '【催促】候補日から日程確定をお願いします（{{project_type}}・{{client_name}}）',
+    body: `候補日が設定されています。ご都合の良い日程を選択し、確定をお願いします。
+
+案件内容：{{project_type}}
+顧客名：{{client_name}}
+案件ID：{{case_id}}
+担当営業：{{sales_rep}}
+希望候補日数：{{candidate_days}}日
+
+▼候補日一覧
+{{candidate_list}}
+
+お早めのご確認・日程確定をお願いいたします。
+
+▼ 下のボタンからこの案件をすぐに確認できます（ログイン後、自動でこの案件が開きます）`
+  },
 };
 
 async function getEmailTemplates() {
@@ -547,7 +564,7 @@ async function initDB() {
     // ── RLS（Row Level Security）を全テーブルで有効化 ─────────────
     // アプリは postgres ロールで直接接続するため RLS の影響を受けず、動作は変わらない。
     // Supabase の PostgREST 経由の外部アクセスのみをブロックする（Lint: "RLS Disabled in Public" 対策）。
-    const rlsTables = ['users', 'projects', 'schedule_candidates', 'blocked_dates', 'settings'];
+    const rlsTables = ['users', 'projects', 'schedule_candidates', 'blocked_dates', 'settings', 'case_id_counters'];
     for (const t of rlsTables) {
       await client.query(`ALTER TABLE ${t} ENABLE ROW LEVEL SECURITY`).catch(e => {
         console.error(`[RLS] ${t} の有効化に失敗:`, e.message);
@@ -1100,7 +1117,41 @@ app.post('/api/projects/:id/remind', async (req, res) => {
   res.json({ success: true });
 });
 
-// 自動キャンセルバッチ
+// 仮スケジュール設定済みの案件について、管理者が営業担当へ日程確定を催促する
+app.post('/api/projects/:id/remind-confirm', async (req, res) => {
+  const { rows } = await pool.query('SELECT * FROM projects WHERE id=$1', [req.params.id]);
+  if (!rows[0]) return res.status(404).json({ error: '案件が見つかりません' });
+  const p = parseProject(rows[0]);
+  if (p.status !== 'scheduled') return res.status(400).json({ error: '仮スケジュール設定済みの案件のみ催促できます' });
+
+  const { rows: cands } = await pool.query('SELECT * FROM schedule_candidates WHERE project_id=$1 ORDER BY candidate_date', [req.params.id]);
+  if (!cands.length) return res.status(400).json({ error: '候補日が登録されていません' });
+
+  const allCsNames = [...new Set(cands.flatMap(c => {
+    try { return JSON.parse(c.cs_members || '[]'); } catch { return []; }
+  }))];
+  const dateLines = cands.map(c => {
+    const candCs = (() => { try { return JSON.parse(c.cs_members || '[]'); } catch { return []; } })();
+    let s = `${c.label}：${c.candidate_date}`;
+    if (c.candidate_date_to) s += `〜${c.candidate_date_to}`;
+    if (c.candidate_time) s += ` ${c.candidate_time}`;
+    if (candCs.length) s += ` （CS担当：${candCs.join('、')}）`;
+    return s;
+  }).join('\n');
+
+  const allTo = await buildRecipients(p.sales_rep, allCsNames);
+  if (!allTo.length) return res.status(400).json({ error: '送信先メールアドレスが登録されていません。管理者設定でメールアドレスを登録してください。' });
+
+  const result = await sendTemplatedEmail('confirm_reminder', allTo, {
+    case_id: p.case_id || '', project_type: p.project_type, client_name: p.client_name, sales_rep: p.sales_rep,
+    candidate_days: p.candidate_days || 1,
+    candidate_list: dateLines,
+    detail_url: buildDetailUrl(p.id),
+  });
+  if (result?.error) return res.status(500).json({ error: result.error });
+  if (result?.skipped) return res.status(400).json({ error: 'メール送信設定（Gmail/Resend）が未完了です' });
+  res.json({ success: true });
+});
 async function runAutoCancel() {
   try {
     const { rows: projects } = await pool.query(`SELECT * FROM projects WHERE status='scheduled' AND scheduled_at IS NOT NULL`);
