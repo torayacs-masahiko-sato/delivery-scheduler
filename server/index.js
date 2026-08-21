@@ -248,6 +248,21 @@ CS担当者：{{cs_members}}
 
 ▼ 下のボタンからこの案件をすぐに確認できます（ログイン後、自動でこの案件が開きます）`
   },
+  project_message: {
+    subject: '【新着メッセージ】{{project_type}}（{{client_name}}）',
+    body: `案件にメッセージが届きました。
+
+案件内容：{{project_type}}
+顧客名：{{client_name}}
+案件ID：{{case_id}}
+担当営業：{{sales_rep}}
+送信者：{{sender_name}}
+
+▼メッセージ内容
+{{message_body}}
+
+▼ 下のボタンからこの案件をすぐに確認できます（ログイン後、自動でこの案件が開きます）`
+  },
 };
 
 async function getEmailTemplates() {
@@ -451,6 +466,7 @@ async function initDB() {
         sales_rep       TEXT NOT NULL,
         status          TEXT NOT NULL DEFAULT 'pending',
         memo            TEXT DEFAULT '',
+        client_url      TEXT DEFAULT '',
         delivery_method TEXT DEFAULT 'remote',
         candidate_days  INTEGER DEFAULT 1,
         confirmed_date  TEXT,
@@ -460,6 +476,15 @@ async function initDB() {
         shortage_reason TEXT DEFAULT '',
         created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE TABLE IF NOT EXISTS project_messages (
+        id              TEXT PRIMARY KEY,
+        project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        sender_login_id TEXT DEFAULT '',
+        sender_name     TEXT NOT NULL,
+        sender_role     TEXT NOT NULL DEFAULT 'sales',
+        body            TEXT NOT NULL,
+        created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
       CREATE TABLE IF NOT EXISTS schedule_candidates (
         id                TEXT PRIMARY KEY,
@@ -521,6 +546,7 @@ async function initDB() {
       FROM projects p WHERE sc.project_id = p.id AND (sc.sales_rep IS NULL OR sc.sales_rep = '')
     `).catch(() => {});
     await client.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS case_id TEXT`);
+    await client.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS client_url TEXT DEFAULT ''`);
     // 既存の case_id が NULL のプロジェクトに連番IDを付与（後方互換）
     await client.query(`
       UPDATE projects SET case_id = 'DS-' ||
@@ -564,7 +590,7 @@ async function initDB() {
     // ── RLS（Row Level Security）を全テーブルで有効化 ─────────────
     // アプリは postgres ロールで直接接続するため RLS の影響を受けず、動作は変わらない。
     // Supabase の PostgREST 経由の外部アクセスのみをブロックする（Lint: "RLS Disabled in Public" 対策）。
-    const rlsTables = ['users', 'projects', 'schedule_candidates', 'blocked_dates', 'settings', 'case_id_counters'];
+    const rlsTables = ['users', 'projects', 'schedule_candidates', 'blocked_dates', 'settings', 'case_id_counters', 'project_messages'];
     for (const t of rlsTables) {
       await client.query(`ALTER TABLE ${t} ENABLE ROW LEVEL SECURITY`).catch(e => {
         console.error(`[RLS] ${t} の有効化に失敗:`, e.message);
@@ -833,17 +859,20 @@ app.get('/api/projects/:id', async (req, res) => {
 
 // 新規登録
 app.post('/api/projects', async (req, res) => {
-  const { client_name, project_type, sales_rep, memo, delivery_method, candidate_days } = req.body;
+  const { client_name, project_type, sales_rep, memo, delivery_method, candidate_days, client_url } = req.body;
   if (!client_name?.trim() || !project_type?.trim() || !sales_rep?.trim() || !memo?.trim()) {
     console.error('[POST /projects] 必須項目不足:', { client_name, project_type, sales_rep, memo });
     return res.status(400).json({ error: '必須項目が不足しています（備考は必須です）' });
   }
   if (memo && memo.length > 50) return res.status(400).json({ error: '備考は50文字以内で入力してください' });
+  if (client_url && client_url.trim() && !/^https?:\/\//i.test(client_url.trim())) {
+    return res.status(400).json({ error: '顧客情報URLは http:// または https:// から始めてください' });
+  }
   const id = uuidv4();
   const case_id = await generateCaseId();
   await pool.query(
-    `INSERT INTO projects (id,case_id,client_name,project_type,sales_rep,memo,delivery_method,candidate_days,status,cs_members) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending','[]')`,
-    [id, case_id, client_name, project_type, sales_rep, memo || '', delivery_method || 'remote', candidate_days || 1]
+    `INSERT INTO projects (id,case_id,client_name,project_type,sales_rep,memo,client_url,delivery_method,candidate_days,status,cs_members) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending','[]')`,
+    [id, case_id, client_name, project_type, sales_rep, memo || '', (client_url || '').trim(), delivery_method || 'remote', candidate_days || 1]
   );
   const { rows } = await pool.query('SELECT * FROM projects WHERE id=$1', [id]);
   const project = { ...parseProject(rows[0]), candidates: [] };
@@ -863,16 +892,20 @@ app.post('/api/projects', async (req, res) => {
 
 // 更新
 app.put('/api/projects/:id', async (req, res) => {
-  const { client_name, project_type, sales_rep, memo, delivery_method, candidate_days, cs_members, candidates, status, confirmed_date } = req.body;
+  const { client_name, project_type, sales_rep, memo, client_url, delivery_method, candidate_days, cs_members, candidates, status, confirmed_date } = req.body;
   if (memo && memo.length > 50) return res.status(400).json({ error: '備考は50文字以内で入力してください' });
+  if (client_url && client_url.trim() && !/^https?:\/\//i.test(client_url.trim())) {
+    return res.status(400).json({ error: '顧客情報URLは http:// または https:// から始めてください' });
+  }
   const { rows: ex } = await pool.query('SELECT * FROM projects WHERE id=$1', [req.params.id]);
   if (!ex[0]) return res.status(404).json({ error: '案件が見つかりません' });
   const p = ex[0];
   const csMembersJson = cs_members !== undefined ? JSON.stringify(cs_members) : p.cs_members;
   await pool.query(
-    `UPDATE projects SET client_name=$1,project_type=$2,sales_rep=$3,memo=$4,status=$5,confirmed_date=$6,delivery_method=$7,candidate_days=$8,cs_members=$9,updated_at=NOW() WHERE id=$10`,
+    `UPDATE projects SET client_name=$1,project_type=$2,sales_rep=$3,memo=$4,status=$5,confirmed_date=$6,delivery_method=$7,candidate_days=$8,cs_members=$9,client_url=$10,updated_at=NOW() WHERE id=$11`,
     [client_name??p.client_name, project_type??p.project_type, sales_rep??p.sales_rep, memo??p.memo,
-     status??p.status, confirmed_date??p.confirmed_date, delivery_method??p.delivery_method, candidate_days??p.candidate_days, csMembersJson, req.params.id]
+     status??p.status, confirmed_date??p.confirmed_date, delivery_method??p.delivery_method, candidate_days??p.candidate_days, csMembersJson,
+     client_url !== undefined ? client_url.trim() : p.client_url, req.params.id]
   );
   if (candidates !== undefined) {
     await pool.query('DELETE FROM schedule_candidates WHERE project_id=$1', [req.params.id]);
@@ -1152,6 +1185,55 @@ app.post('/api/projects/:id/remind-confirm', async (req, res) => {
   if (result?.skipped) return res.status(400).json({ error: 'メール送信設定（Gmail/Resend）が未完了です' });
   res.json({ success: true });
 });
+
+// ── 案件ごとのメッセージ（営業⇔管理者のやり取り） ──────────────
+app.get('/api/projects/:id/messages', async (req, res) => {
+  const { rows } = await pool.query(
+    'SELECT * FROM project_messages WHERE project_id=$1 ORDER BY created_at ASC',
+    [req.params.id]
+  );
+  res.json(rows);
+});
+
+app.post('/api/projects/:id/messages', async (req, res) => {
+  const { body, sender_name, sender_role, sender_login_id } = req.body;
+  if (!body?.trim()) return res.status(400).json({ error: 'メッセージを入力してください' });
+  if (!sender_name?.trim()) return res.status(400).json({ error: '送信者情報が取得できませんでした' });
+  const { rows: proj } = await pool.query('SELECT * FROM projects WHERE id=$1', [req.params.id]);
+  if (!proj[0]) return res.status(404).json({ error: '案件が見つかりません' });
+  const p = parseProject(proj[0]);
+
+  const id = uuidv4();
+  await pool.query(
+    'INSERT INTO project_messages (id,project_id,sender_login_id,sender_name,sender_role,body) VALUES ($1,$2,$3,$4,$5,$6)',
+    [id, req.params.id, sender_login_id || '', sender_name.trim(), sender_role || 'sales', body.trim()]
+  );
+  const { rows: created } = await pool.query('SELECT * FROM project_messages WHERE id=$1', [id]);
+
+  // 送信者が営業なら管理者へ、管理者なら担当営業へ通知メールを送る
+  try {
+    const settings = await getEmailSettings();
+    const salesArea = await getSalesArea(p.sales_rep);
+    const adminEmails = await getAdminEmailsByArea(salesArea);
+    let allTo = [];
+    if (sender_role === 'admin') {
+      const salesEmail = await getSalesEmail(p.sales_rep);
+      allTo = salesEmail ? [salesEmail] : [];
+    } else {
+      allTo = [...new Set([...(settings.notify_emails || []), ...adminEmails])];
+    }
+    if (allTo.length) {
+      await sendTemplatedEmail('project_message', allTo, {
+        case_id: p.case_id || '', project_type: p.project_type, client_name: p.client_name, sales_rep: p.sales_rep,
+        sender_name: sender_name.trim(), message_body: body.trim(),
+        detail_url: buildDetailUrl(p.id),
+      });
+    }
+  } catch (e) { console.error('[メッセージ通知メール送信エラー]', e.message); }
+
+  res.status(201).json(created[0]);
+});
+
 async function runAutoCancel() {
   try {
     const { rows: projects } = await pool.query(`SELECT * FROM projects WHERE status='scheduled' AND scheduled_at IS NOT NULL`);
