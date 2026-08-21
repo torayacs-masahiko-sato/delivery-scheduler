@@ -39,6 +39,17 @@ export default function DetailPage({ projectId, onBack, addToast, onRefresh }) {
   const [showEditCsPicker, setShowEditCsPicker] = useState(false);
   const [editingCs, setEditingCs] = useState(false);
 
+  // 案件ごとのメッセージ（営業⇔管理者）
+  const [messages, setMessages] = useState([]);
+  const [messagesLoading, setMessagesLoading] = useState(true);
+  const [messageInput, setMessageInput] = useState('');
+  const [sendingMessage, setSendingMessage] = useState(false);
+
+  const loadMessages = () => {
+    setMessagesLoading(true);
+    api.getMessages(projectId).then(setMessages).catch(() => {}).finally(() => setMessagesLoading(false));
+  };
+
   const load = () => {
     setLoading(true);
     api.getProject(projectId).then(p => {
@@ -48,6 +59,7 @@ export default function DetailPage({ projectId, onBack, addToast, onRefresh }) {
   };
   useEffect(() => {
     load();
+    loadMessages();
     api.getUsers().then(setSalesUsers).catch(() => {});
     api.getCsMembers().then(setCsMembers).catch(() => {});
   }, [projectId]);
@@ -281,6 +293,53 @@ export default function DetailPage({ projectId, onBack, addToast, onRefresh }) {
     finally { setBusy(false); }
   };
 
+  // 希望候補日数の上限に達していても、管理者が候補日を追加できるよう上限を1件増やす
+  const handleIncreaseMaxDays = async () => {
+    const maxDays = project.candidate_days || 1;
+    setBusy(true);
+    try {
+      const updated = await api.updateProject(projectId, { candidate_days: maxDays + 1 });
+      setProject(p => ({ ...p, ...updated, candidates: p.candidates }));
+      addToast(`候補日の上限を${maxDays + 1}日に増やしました`);
+    } catch (err) { addToast(err.message, 'error'); }
+    finally { setBusy(false); }
+  };
+
+  // 顧客情報URLの登録・編集（管理者・担当営業）
+  const handleEditClientUrl = async () => {
+    const next = window.prompt('顧客情報のURLを入力してください（空にすると削除されます）', project.client_url || '');
+    if (next === null) return; // キャンセル
+    const trimmed = next.trim();
+    if (trimmed && !/^https?:\/\//i.test(trimmed)) {
+      addToast('URLは http:// または https:// から入力してください', 'error'); return;
+    }
+    setBusy(true);
+    try {
+      const updated = await api.updateProject(projectId, { client_url: trimmed });
+      setProject(p => ({ ...p, ...updated, candidates: p.candidates }));
+      addToast(trimmed ? '顧客情報URLを更新しました' : '顧客情報URLを削除しました');
+    } catch (err) { addToast(err.message, 'error'); }
+    finally { setBusy(false); }
+  };
+
+  // 案件ごとのメッセージ送信（営業⇔管理者）
+  const handleSendMessage = async (e) => {
+    e.preventDefault();
+    if (!messageInput.trim()) return;
+    setSendingMessage(true);
+    try {
+      const created = await api.sendMessage(projectId, {
+        body: messageInput.trim(),
+        sender_name: user.name,
+        sender_role: isAdmin ? 'admin' : 'sales',
+        sender_login_id: user.login_id,
+      });
+      setMessages(m => [...m, created]);
+      setMessageInput('');
+    } catch (err) { addToast(err.message, 'error'); }
+    finally { setSendingMessage(false); }
+  };
+
   const handleDelete = async () => {
     if (!confirm('この案件を削除しますか？')) return;
     await api.deleteProject(projectId);
@@ -489,6 +548,24 @@ export default function DetailPage({ projectId, onBack, addToast, onRefresh }) {
         <div className="meta-item"><div className="meta-label">納品方法</div><div className="meta-value">{DELIVERY_LABELS[project.delivery_method]||'—'}</div></div>
         <div className="meta-item"><div className="meta-label">ステータス</div><div className="meta-value">{STATUS_MAP[project.status]?.label??project.status}</div></div>
         <div className="meta-item"><div className="meta-label">希望候補日数</div><div className="meta-value">{maxDays}日</div></div>
+        {(isOwner || isAdmin) && (
+          <div className="meta-item" style={{ gridColumn:'1/-1' }}>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+              <div className="meta-label">顧客情報URL</div>
+              <button className="btn btn-ghost btn-sm" onClick={handleEditClientUrl} disabled={busy} style={{ padding:'2px 8px', fontSize:'0.72rem' }}>
+                {project.client_url ? '編集' : '+ 追加'}
+              </button>
+            </div>
+            {project.client_url ? (
+              <a href={project.client_url} target="_blank" rel="noopener noreferrer"
+                className="meta-value" style={{ color:'var(--accent-lt)', wordBreak:'break-all', display:'block' }}>
+                🔗 {project.client_url}
+              </a>
+            ) : (
+              <div className="meta-value" style={{ color:'var(--text-sub)' }}>未登録</div>
+            )}
+          </div>
+        )}
         {(project.cs_members||[]).length > 0 && (
           <div className="meta-item" style={{ gridColumn:'1/-1' }}>
             <div className="meta-label">CS担当者</div>
@@ -525,15 +602,27 @@ export default function DetailPage({ projectId, onBack, addToast, onRefresh }) {
         <div className="card">
           <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12 }}>
             <div className="section-title" style={{ marginBottom:0 }}>{isConfirmed ? '確定スケジュール' : '候補日'}</div>
-            {canEditCandidates && cands.length < maxDays && !editingCandidateId && (
-              <button className="btn btn-ghost btn-sm" onClick={() => {
-                setEditingCandidateId(null);
-                if (!showAddForm) setNewCandidate(c => ({ ...c, sales_rep: c.sales_rep || project.sales_rep || '' }));
-                setShowAddForm(v => !v);
-              }}>
-                {showAddForm ? '閉じる' : '+ 追加'}
-              </button>
-            )}
+            <div style={{ display:'flex', gap:6 }}>
+              {canEditCandidates && !editingCandidateId && (
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={handleIncreaseMaxDays}
+                  disabled={busy}
+                  title="希望候補日数を1日増やして、追加で候補日を登録できるようにします"
+                >
+                  🔧 候補日数+1
+                </button>
+              )}
+              {canEditCandidates && cands.length < maxDays && !editingCandidateId && (
+                <button className="btn btn-ghost btn-sm" onClick={() => {
+                  setEditingCandidateId(null);
+                  if (!showAddForm) setNewCandidate(c => ({ ...c, sales_rep: c.sales_rep || project.sales_rep || '' }));
+                  setShowAddForm(v => !v);
+                }}>
+                  {showAddForm ? '閉じる' : '+ 追加'}
+                </button>
+              )}
+            </div>
           </div>
 
           {/* 候補日追加フォーム */}
@@ -747,6 +836,61 @@ export default function DetailPage({ projectId, onBack, addToast, onRefresh }) {
               </button>
             </div>
           )}
+        </div>
+      )}
+
+      {/* メッセージ（営業⇔管理者のやり取り） */}
+      {(isOwner || isAdmin) && (
+        <div className="card">
+          <div className="section-title">💬 メッセージ（営業・管理者間の連絡）</div>
+          <div style={{
+            display:'flex', flexDirection:'column', gap:8,
+            maxHeight:280, overflowY:'auto', marginBottom:12,
+            padding: messages.length ? '4px 2px' : 0,
+          }}>
+            {messagesLoading ? (
+              <div style={{ fontSize:'0.8rem', color:'var(--text-sub)', textAlign:'center', padding:'12px 0' }}>読み込み中...</div>
+            ) : messages.length === 0 ? (
+              <div style={{ fontSize:'0.8rem', color:'var(--text-sub)', textAlign:'center', padding:'12px 0' }}>まだメッセージはありません</div>
+            ) : messages.map(m => {
+              const mine = m.sender_login_id === user.login_id;
+              return (
+                <div key={m.id} style={{
+                  alignSelf: mine ? 'flex-end' : 'flex-start',
+                  maxWidth: '85%',
+                  background: mine ? 'rgba(59,130,246,0.18)' : 'var(--card-bg)',
+                  border: `1px solid ${mine ? 'var(--accent)' : 'var(--border)'}`,
+                  borderRadius: 12,
+                  padding: '8px 12px',
+                }}>
+                  <div style={{ fontSize:'0.68rem', color:'var(--text-sub)', marginBottom:3, display:'flex', gap:6, alignItems:'center' }}>
+                    <span style={{ fontWeight:600 }}>{m.sender_name}</span>
+                    <span style={{
+                      fontSize:'0.62rem', padding:'0px 6px', borderRadius:99,
+                      background: m.sender_role === 'admin' ? 'rgba(139,92,246,0.18)' : 'rgba(16,185,129,0.18)',
+                      color: m.sender_role === 'admin' ? '#a78bfa' : 'var(--success)',
+                    }}>
+                      {m.sender_role === 'admin' ? '管理者' : '営業'}
+                    </span>
+                    <span>{formatDateTime(m.created_at)}</span>
+                  </div>
+                  <div style={{ fontSize:'0.85rem', whiteSpace:'pre-wrap', wordBreak:'break-word' }}>{m.body}</div>
+                </div>
+              );
+            })}
+          </div>
+          <form onSubmit={handleSendMessage} style={{ display:'flex', gap:8 }}>
+            <input
+              value={messageInput}
+              onChange={e => setMessageInput(e.target.value)}
+              placeholder="メッセージを入力..."
+              style={{ flex:1 }}
+              disabled={sendingMessage}
+            />
+            <button type="submit" className="btn btn-primary btn-sm" disabled={sendingMessage || !messageInput.trim()}>
+              送信
+            </button>
+          </form>
         </div>
       )}
 

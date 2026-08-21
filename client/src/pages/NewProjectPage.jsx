@@ -12,6 +12,7 @@ export default function NewProjectPage({ onSaved, addToast }) {
     project_type: [],
     sales_rep: user.role === 'sales' ? user.name : '',
     memo: '',
+    client_url: '',
     delivery_method: 'remote',
     candidate_days: 1,
   });
@@ -42,6 +43,9 @@ export default function NewProjectPage({ onSaved, addToast }) {
     e.preventDefault();
     if (!form.project_type.length) { addToast('案件内容を1つ以上選択してください', 'error'); return; }
     if (!form.client_name?.trim()) { addToast('顧客名を入力してください', 'error'); return; }
+    if (form.client_url?.trim() && !/^https?:\/\//i.test(form.client_url.trim())) {
+      addToast('顧客情報URLは http:// または https:// から入力してください', 'error'); return;
+    }
     if (!form.memo?.trim()) { addToast('備考を入力してください', 'error'); return; }
     // sales_rep は営業ロールの場合 user.name を確実にセット（空文字対策）
     const sales_rep = (user.role === 'sales' || user.role === 'cs')
@@ -79,6 +83,16 @@ export default function NewProjectPage({ onSaved, addToast }) {
               onChange={e => setField('client_name', e.target.value)}
               placeholder="株式会社〇〇"
               required
+            />
+          </div>
+
+          <div className="form-group">
+            <label>顧客情報URL（任意）</label>
+            <input
+              type="url"
+              value={form.client_url}
+              onChange={e => setField('client_url', e.target.value)}
+              placeholder="https://example.com/customer/123"
             />
           </div>
 
