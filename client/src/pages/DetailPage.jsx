@@ -322,6 +322,22 @@ export default function DetailPage({ projectId, onBack, addToast, onRefresh }) {
     finally { setBusy(false); }
   };
 
+  // 備考の編集（担当営業・管理者）
+  const handleEditMemo = async () => {
+    const next = window.prompt('備考を入力してください（50文字以内・必須）', project.memo || '');
+    if (next === null) return; // キャンセル
+    const trimmed = next.trim();
+    if (!trimmed) { addToast('備考は必須です。空にはできません', 'error'); return; }
+    if (trimmed.length > 50) { addToast('備考は50文字以内で入力してください', 'error'); return; }
+    setBusy(true);
+    try {
+      const updated = await api.updateProject(projectId, { memo: trimmed });
+      setProject(p => ({ ...p, ...updated, candidates: p.candidates }));
+      addToast('備考を更新しました');
+    } catch (err) { addToast(err.message, 'error'); }
+    finally { setBusy(false); }
+  };
+
   // 案件ごとのメッセージ送信（営業⇔管理者）
   const handleSendMessage = async (e) => {
     e.preventDefault();
@@ -590,10 +606,21 @@ export default function DetailPage({ projectId, onBack, addToast, onRefresh }) {
         </div>
       </div>
 
-      {project.memo && (
+      {(project.memo || isOwner || isAdmin) && (
         <div className="card">
-          <div className="section-title">備考</div>
-          <div style={{ fontSize:'0.9rem',lineHeight:1.6 }}>{project.memo}</div>
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom: project.memo ? 8 : 0 }}>
+            <div className="section-title" style={{ marginBottom:0 }}>備考</div>
+            {(isOwner || isAdmin) && (
+              <button className="btn btn-ghost btn-sm" onClick={handleEditMemo} disabled={busy} style={{ padding:'2px 8px', fontSize:'0.72rem' }}>
+                {project.memo ? '編集' : '+ 追加'}
+              </button>
+            )}
+          </div>
+          {project.memo ? (
+            <div style={{ fontSize:'0.9rem',lineHeight:1.6 }}>{project.memo}</div>
+          ) : (isOwner || isAdmin) ? (
+            <div style={{ fontSize:'0.85rem', color:'var(--text-sub)' }}>未登録</div>
+          ) : null}
         </div>
       )}
 
