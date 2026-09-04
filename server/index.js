@@ -893,6 +893,7 @@ app.post('/api/projects', async (req, res) => {
 // 更新
 app.put('/api/projects/:id', async (req, res) => {
   const { client_name, project_type, sales_rep, memo, client_url, delivery_method, candidate_days, cs_members, candidates, status, confirmed_date } = req.body;
+  if (memo !== undefined && !memo?.trim()) return res.status(400).json({ error: '備考は必須です。空にはできません' });
   if (memo && memo.length > 50) return res.status(400).json({ error: '備考は50文字以内で入力してください' });
   if (client_url && client_url.trim() && !/^https?:\/\//i.test(client_url.trim())) {
     return res.status(400).json({ error: '顧客情報URLは http:// または https:// から始めてください' });
