@@ -3,6 +3,7 @@ import { api } from '../api';
 import { useAuth } from '../hooks/useAuth';
 import StaffPicker from '../components/StaffPicker';
 
+const DELIVERY_LABELS = { remote: '🖥 リモート', onsite: '🚗 現地訪問' };
 const PROJECT_TYPES = ['新規納品', '増設納品', 'PC入替え', 'I/O機器納品', '打合せ', '調査'];
 
 export default function NewProjectPage({ onSaved, addToast }) {
@@ -18,6 +19,8 @@ export default function NewProjectPage({ onSaved, addToast }) {
   });
   const [salesUsers, setSalesUsers] = useState([]);
   const [loading, setLoading] = useState(false);
+  // 画面の段階: input(入力) → confirm(確認)。入力内容はformに残るので「修正する」で戻っても消えない
+  const [step, setStep] = useState('input');
   const [showSalesPicker, setShowSalesPicker] = useState(false);
 
   useEffect(() => { api.getUsers().then(setSalesUsers); }, []);
@@ -39,33 +42,107 @@ export default function NewProjectPage({ onSaved, addToast }) {
     if (v.length <= 50) setField('memo', v);
   };
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    if (!form.project_type.length) { addToast('案件内容を1つ以上選択してください', 'error'); return; }
-    if (!form.client_name?.trim()) { addToast('顧客名を入力してください', 'error'); return; }
+  // 登録に使う担当営業名（営業ロールの場合は user.name を確実にセット＝空文字対策）
+  const resolveSalesRep = () =>
+    (user.role === 'sales' || user.role === 'cs') ? user.name : form.sales_rep;
+
+  // 入力チェック。問題なければ true を返す（確認画面へ進む前・登録直前の両方で使う）
+  const validate = () => {
+    if (!form.project_type.length) { addToast('案件内容を1つ以上選択してください', 'error'); return false; }
+    if (!form.client_name?.trim()) { addToast('顧客名を入力してください', 'error'); return false; }
     if (form.client_url?.trim() && !/^https?:\/\//i.test(form.client_url.trim())) {
-      addToast('顧客情報URLは http:// または https:// から入力してください', 'error'); return;
+      addToast('顧客情報URLは http:// または https:// から入力してください', 'error'); return false;
     }
-    if (!form.memo?.trim()) { addToast('備考を入力してください', 'error'); return; }
-    // sales_rep は営業ロールの場合 user.name を確実にセット（空文字対策）
-    const sales_rep = (user.role === 'sales' || user.role === 'cs')
-      ? user.name
-      : form.sales_rep;
-    if (!sales_rep?.trim()) { addToast('担当営業を選択してください', 'error'); return; }
+    if (!form.memo?.trim()) { addToast('備考を入力してください', 'error'); return false; }
+    if (!resolveSalesRep()?.trim()) { addToast('担当営業を選択してください', 'error'); return false; }
+    return true;
+  };
+
+  // 入力画面の「確認画面へ」→ 入力チェック後、確認画面を表示する（この時点ではまだ登録しない）
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    if (!validate()) return;
+    setStep('confirm');
+    window.scrollTo({ top: 0 });
+  };
+
+  // 確認画面の「修正する」→ 入力内容(form)はそのまま保持して入力画面へ戻る
+  const handleBack = () => {
+    setStep('input');
+    window.scrollTo({ top: 0 });
+  };
+
+  // 確認画面の「この内容で登録する」→ ここで初めてサーバーへ登録する
+  const handleRegister = async () => {
+    if (loading) return; // 二重登録防止
+    if (!validate()) { setStep('input'); return; }
     setLoading(true);
     try {
       // 複数選択された案件内容は「・」区切りの1つの文字列として保存する
       const project_type = form.project_type.join('・');
-      await api.createProject({ ...form, project_type, sales_rep, candidates: [] });
+      await api.createProject({ ...form, project_type, sales_rep: resolveSalesRep(), candidates: [] });
       addToast('案件を登録しました');
       onSaved();
     } catch (err) {
+      // 失敗時は確認画面に留まり、「修正する」または再度の登録ができる
       addToast(err.message, 'error');
     } finally { setLoading(false); }
   };
 
   const memoLen = form.memo.length;
 
+  // ── 確認画面 ───────────────────────────────────────────
+  if (step === 'confirm') {
+    const rows = [
+      { label: '顧客名', value: form.client_name.trim() },
+      {
+        label: '顧客情報URL',
+        value: form.client_url.trim()
+          ? <span style={{ wordBreak: 'break-all', color: 'var(--accent-lt)' }}>{form.client_url.trim()}</span>
+          : <span style={{ color: 'var(--text-sub)' }}>未入力</span>,
+      },
+      { label: '案件内容', value: form.project_type.join('・') },
+      { label: '担当営業', value: resolveSalesRep() },
+      { label: '納品方法', value: DELIVERY_LABELS[form.delivery_method] },
+      { label: '備考', value: form.memo.trim() },
+      { label: '希望候補日数', value: `${form.candidate_days}日` },
+    ];
+    return (
+      <>
+        <div className="page-title">登録内容の確認</div>
+        <div className="page-sub">内容に間違いがなければ「この内容で登録する」を押してください</div>
+
+        <div className="card">
+          {rows.map((r, i) => (
+            <div key={r.label} style={{
+              padding: '12px 0',
+              borderTop: i === 0 ? 'none' : '1px solid var(--border)',
+            }}>
+              <div style={{ fontSize: '0.72rem', color: 'var(--text-sub)', marginBottom: 4 }}>{r.label}</div>
+              <div style={{ fontSize: '0.95rem', lineHeight: 1.6, wordBreak: 'break-word' }}>{r.value}</div>
+            </div>
+          ))}
+        </div>
+
+        <div style={{ fontSize: '0.78rem', color: 'var(--text-sub)', lineHeight: 1.6, marginBottom: 14 }}>
+          ※ 登録すると管理者に通知メールが送信されます
+        </div>
+
+        <div style={{ display: 'flex', gap: 10 }}>
+          <button type="button" className="btn btn-ghost" style={{ flex: 1 }}
+            onClick={handleBack} disabled={loading}>
+            ← 修正する
+          </button>
+          <button type="button" className="btn btn-primary" style={{ flex: 2 }}
+            onClick={handleRegister} disabled={loading}>
+            {loading ? '登録中...' : 'この内容で登録する'}
+          </button>
+        </div>
+      </>
+    );
+  }
+
+  // ── 入力画面 ───────────────────────────────────────────
   return (
     <>
       <div className="page-title">案件を登録</div>
@@ -231,9 +308,9 @@ export default function NewProjectPage({ onSaved, addToast }) {
         <button
           className="btn btn-primary btn-full"
           type="submit"
-          disabled={loading || !form.project_type.length || !form.client_name || !form.memo?.trim()}
+          disabled={!form.project_type.length || !form.client_name || !form.memo?.trim()}
         >
-          {loading ? '登録中...' : '依頼を送信する'}
+          確認画面へ
         </button>
       </form>
     </>
