@@ -8,6 +8,7 @@ const { Resend } = require('resend');
 const nodemailer = require('nodemailer');
 const { google } = require('googleapis');
 const bcrypt = require('bcryptjs');
+const { createAuth } = require('./auth');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -536,6 +537,13 @@ async function initDB() {
     await client.query(`UPDATE users SET login_id = name WHERE login_id IS NULL`);
     await client.query(`ALTER TABLE users ADD CONSTRAINT users_login_id_unique UNIQUE (login_id)`).catch(() => {});
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS area TEXT DEFAULT '東京'`);
+    // ── 多要素認証（TOTP）用の列。シークレットはアプリ側で暗号化して保存 ──
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_enabled BOOLEAN DEFAULT FALSE`);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_secret TEXT`);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_backup_codes TEXT`);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_last_step BIGINT`);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS login_fail_count INT DEFAULT 0`);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS login_locked_until TIMESTAMPTZ`);
     await client.query(`ALTER TABLE blocked_dates ADD COLUMN IF NOT EXISTS area TEXT NOT NULL DEFAULT '東京'`);
     await client.query(`ALTER TABLE schedule_candidates ADD COLUMN IF NOT EXISTS candidate_date_to TEXT DEFAULT ''`);
     await client.query(`ALTER TABLE schedule_candidates ADD COLUMN IF NOT EXISTS cs_members TEXT DEFAULT '[]'`);
@@ -608,22 +616,12 @@ app.use(express.json());
 const CLIENT_BUILD = path.join(__dirname, '../client/dist');
 if (fs.existsSync(CLIENT_BUILD)) app.use(express.static(CLIENT_BUILD));
 
-// ── Auth ──────────────────────────────────────────────────────
-app.post('/api/auth/login', async (req, res) => {
-  const { name, password } = req.body;
-  if (!name || !password) return res.status(400).json({ error: 'ログインIDとパスワードを入力してください' });
-  const { rows } = await pool.query(
-    'SELECT id,name,display_name,login_id,role,area,password FROM users WHERE login_id=$1', [name]
-  );
-  const u = rows[0];
-  if (!u) return res.status(401).json({ error: 'ログインIDまたはパスワードが違います' });
-
-  const match = await bcrypt.compare(password, u.password).catch(() => false);
-  if (!match) return res.status(401).json({ error: 'ログインIDまたはパスワードが違います' });
-
-  const displayName = u.display_name || u.name || u.login_id || 'ユーザー';
-  res.json({ id: u.id, name: displayName, login_id: u.login_id, role: u.role, area: u.area || '東京' });
-});
+// ── Auth（ログイン・多要素認証・セッション。詳細は server/auth.js）──
+// 疎通確認用（認証不要）。スリープ復帰待ちの画面が使う
+app.get('/api/health', (_req, res) => res.json({ ok: true }));
+const auth = createAuth({ pool, bcrypt, express });
+app.use('/api', auth.guard);   // /api は ログイン必須（ログイン系・health のみ例外）。管理者専用操作もここで判定
+app.use(auth.router);
 
 // ── ユーザー共通ヘルパー ──────────────────────────────────────
 async function upsertUser(id, { display_name, login_id, password, email, area, role }) {
@@ -640,7 +638,7 @@ async function upsertUser(id, { display_name, login_id, password, email, area, r
 
 // ── 営業 CRUD ─────────────────────────────────────────────────
 app.get('/api/users', async (_req, res) => {
-  const { rows } = await pool.query("SELECT id,display_name,login_id,email,area FROM users WHERE role='sales' ORDER BY display_name");
+  const { rows } = await pool.query("SELECT id,display_name,login_id,email,area,mfa_enabled FROM users WHERE role='sales' ORDER BY display_name");
   res.json(rows);
 });
 app.post('/api/users', async (req, res) => {
@@ -677,7 +675,7 @@ app.delete('/api/users/:id', async (req, res) => {
 
 // ── 管理者 CRUD ───────────────────────────────────────────────
 app.get('/api/admins', async (_req, res) => {
-  const { rows } = await pool.query("SELECT id,display_name,login_id,email,area FROM users WHERE role='admin' ORDER BY display_name");
+  const { rows } = await pool.query("SELECT id,display_name,login_id,email,area,mfa_enabled FROM users WHERE role='admin' ORDER BY display_name");
   res.json(rows);
 });
 app.post('/api/admins', async (req, res) => {
@@ -716,7 +714,7 @@ app.delete('/api/admins/:id', async (req, res) => {
 
 // ── CS部員 CRUD ───────────────────────────────────────────────
 app.get('/api/cs-members', async (_req, res) => {
-  const { rows } = await pool.query("SELECT id,display_name,login_id,email,area FROM users WHERE role='cs' ORDER BY area, display_name");
+  const { rows } = await pool.query("SELECT id,display_name,login_id,email,area,mfa_enabled FROM users WHERE role='cs' ORDER BY area, display_name");
   res.json(rows);
 });
 app.post('/api/cs-members', async (req, res) => {
