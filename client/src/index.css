@@ -811,3 +811,12 @@ textarea { resize: vertical; min-height: 80px; }
     to   { opacity: 1; transform: translateY(0) scale(1); }
   }
 }
+
+/* ヘッダー: スマホ幅でも折り返さず、名前だけ省略表示にする */
+.topbar-logo, .topbar-right { white-space: nowrap; }
+.topbar-right { gap: 6px; }
+.topbar-user { max-width: 84px; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 480px) {
+  .topbar-logo { font-size: 0.95rem; }
+  .topbar-user { max-width: 52px; font-size: 0.74rem; }
+}

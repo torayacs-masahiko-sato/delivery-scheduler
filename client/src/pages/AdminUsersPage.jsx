@@ -154,6 +154,7 @@ function UsersTab({ addToast }) {
             <div style={{ fontSize: '0.72rem', color: 'var(--text-sub)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {u.email ? `📧 ${u.email}` : '📧 未設定'}
             </div>
+            <MfaLine target={u} reload={load} addToast={addToast} />
           </div>
           <button className="btn btn-ghost btn-sm" onClick={() => openEdit(u)}>編集</button>
           <button className="btn btn-danger btn-sm" onClick={() => handleDelete(u)}>削除</button>
@@ -289,6 +290,7 @@ function CsMembersTab({ addToast }) {
             <div style={{ fontSize: '0.72rem', color: 'var(--text-sub)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {m.email ? `📧 ${m.email}` : '📧 未設定'}
             </div>
+            <MfaLine target={m} reload={load} addToast={addToast} />
           </div>
           <button className="btn btn-ghost btn-sm" onClick={() => openEdit(m)}>編集</button>
           <button className="btn btn-danger btn-sm" onClick={() => handleDelete(m)}>削除</button>
@@ -426,6 +428,7 @@ function AdminsTab({ addToast }) {
             <div style={{ fontSize: '0.72rem', color: 'var(--text-sub)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {a.email ? `📧 ${a.email}` : '📧 未設定'}
             </div>
+            <MfaLine target={a} reload={load} addToast={addToast} />
           </div>
           <button className="btn btn-ghost btn-sm" onClick={() => openEdit(a)}>編集</button>
           <button className="btn btn-danger btn-sm" onClick={() => handleDelete(a)}>削除</button>
@@ -804,5 +807,23 @@ function TemplatesTab({ addToast }) {
         </div>
       </div>
     </>
+  );
+}
+
+
+// ── 多要素認証の状態表示とリセット（スマホ紛失・機種変更時に管理者が実施）──
+function MfaLine({ target, reload, addToast }) {
+  const handleReset = async () => {
+    if (!confirm(`「${target.display_name}」の多要素認証をリセットしますか？\n\n次回ログイン時に、認証アプリの再設定が必要になります。本人確認のうえ実施してください。`)) return;
+    try { await api.mfaReset(target.id); addToast('多要素認証をリセットしました'); await reload(); }
+    catch (err) { addToast(err.message, 'error'); }
+  };
+  return (
+    <div style={{ fontSize: '0.72rem', color: 'var(--text-sub)', marginTop: 2, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+      <span>🔐 多要素認証: {target.mfa_enabled ? <b style={{ color: 'var(--success, #22c55e)' }}>有効</b> : '未設定'}</span>
+      {target.mfa_enabled && (
+        <button type="button" className="btn btn-ghost btn-sm" style={{ padding: '1px 8px', fontSize: '0.7rem' }} onClick={handleReset}>リセット</button>
+      )}
+    </div>
   );
 }

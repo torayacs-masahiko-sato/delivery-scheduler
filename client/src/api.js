@@ -1,17 +1,37 @@
 const BASE = '';
+// ログイン済みトークンを全リクエストに付与する（サーバー側で /api は ログイン必須のため）
+function authHeader() {
+  try {
+    const u = JSON.parse(sessionStorage.getItem('ds_user'));
+    return u?.token ? { Authorization: `Bearer ${u.token}` } : {};
+  } catch { return {}; }
+}
 async function req(method, path, body) {
   const res = await fetch(`${BASE}/api${path}`, {
-    method, headers: { 'Content-Type': 'application/json' },
+    method, headers: { 'Content-Type': 'application/json', ...authHeader() },
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: 'エラーが発生しました' }));
+    // ログイン有効期限切れ（12時間経過・サーバー再起動後の鍵変更など）→ ログイン画面へ戻す
+    if (res.status === 401 && err.auth) {
+      sessionStorage.removeItem('ds_user');
+      window.location.reload();
+    }
     throw new Error(err.error || 'エラーが発生しました');
   }
   return res.json();
 }
 export const api = {
   login: (loginId, password) => req('POST', '/auth/login', { name: loginId, password }),
+  // 多要素認証
+  mfaVerify: (mfa_token, code) => req('POST', '/auth/mfa/verify', { mfa_token, code }),
+  mfaSetupStart: (setup_token) => req('POST', '/auth/mfa/setup-start', { setup_token }),
+  mfaSetupConfirm: (setup_token, code) => req('POST', '/auth/mfa/setup-confirm', { setup_token, code }),
+  mfaStatus: () => req('GET', '/mfa/status'),
+  mfaDisable: (password, code) => req('POST', '/mfa/disable', { password, code }),
+  mfaNewBackupCodes: (code) => req('POST', '/mfa/backup-codes', { code }),
+  mfaReset: (userId) => req('POST', `/users/${userId}/mfa-reset`),
   getUsers: () => req('GET', '/users'),
   createUser: (data) => req('POST', '/users', data),
   updateUser: (id, data) => req('PUT', `/users/${id}`, data),

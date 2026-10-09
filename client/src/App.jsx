@@ -8,6 +8,7 @@ import NewProjectPage from './pages/NewProjectPage';
 import DetailPage from './pages/DetailPage';
 import CalendarPage from './pages/CalendarPage';
 import AdminUsersPage from './pages/AdminUsersPage';
+import SecurityModal from './components/SecurityModal';
 
 const IconHome     = () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}><path d="M3 9.5L12 3l9 6.5V20a1 1 0 01-1 1H4a1 1 0 01-1-1V9.5z"/><path d="M9 21V12h6v9"/></svg>;
 const IconPlus     = () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}><circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>;
@@ -70,7 +71,7 @@ function SplashScreen() {
 async function pingServer(retries = 60, intervalMs = 2000) {
   for (let i = 0; i < retries; i++) {
     try {
-      const res = await fetch('/api/stats', { signal: AbortSignal.timeout(3000) });
+      const res = await fetch('/api/health', { signal: AbortSignal.timeout(3000) });
       if (res.ok) return true;
     } catch { /* サーバー未起動 */ }
     await new Promise(r => setTimeout(r, intervalMs));
@@ -84,6 +85,7 @@ function AppInner() {
   const [page, setPage] = useState('dashboard');
   const [detailId, setDetailId] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [showSecurity, setShowSecurity] = useState(false);
   const [serverReady, setServerReady] = useState(null); // null=確認中, true=OK, false=失敗
 
   // 起動時にサーバーが応答するまでスプラッシュを表示
@@ -92,7 +94,7 @@ function AppInner() {
     (async () => {
       // まず即時試行、応答があればすぐ表示
       try {
-        const res = await fetch('/api/stats', { signal: AbortSignal.timeout(2000) });
+        const res = await fetch('/api/health', { signal: AbortSignal.timeout(2000) });
         if (!cancelled && res.ok) { setServerReady(true); return; }
       } catch { /* スリープ中 */ }
       // スリープ中 → スプラッシュを出してリトライ
@@ -154,8 +156,9 @@ function AppInner() {
         <div className="topbar-logo"><span className="dot" />納品スケジューラー</div>
         <div className="topbar-right">
           <ThemeToggle />
-          <span style={{ fontSize: '0.82rem' }}>{user.name}</span>
-          <button className="btn btn-ghost btn-sm" onClick={() => { logout(); setPage('dashboard'); }} style={{ padding: '4px 10px' }}>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={() => setShowSecurity(true)} aria-label="セキュリティ設定" title="セキュリティ設定（多要素認証）" style={{ padding: '4px 8px' }}>🔐</button>
+          <span className="topbar-user" style={{ fontSize: '0.82rem' }}>{user.name}</span>
+          <button className="btn btn-ghost btn-sm" onClick={() => { logout(); setPage('dashboard'); }} style={{ padding: '4px 10px', whiteSpace: 'nowrap' }}>
             ログアウト
           </button>
         </div>
@@ -181,6 +184,7 @@ function AppInner() {
         ))}
       </nav>
 
+      {showSecurity && <SecurityModal onClose={() => setShowSecurity(false)} addToast={addToast} />}
       <ToastContainer toasts={toasts} />
     </div>
   );
