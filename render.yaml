@@ -10,5 +10,7 @@ services:
         value: production
       - key: PORT
         value: 10000
+      - key: SESSION_SECRET
+        generateValue: true   # ログイントークンの署名鍵（Renderが自動生成）
       - key: DATABASE_URL
         sync: false   # ← Render Dashboardで手動設定（Supabase の接続URLを貼る）
