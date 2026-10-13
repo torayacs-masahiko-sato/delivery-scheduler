@@ -21,6 +21,8 @@ export default function DetailPage({ projectId, onBack, addToast, onRefresh }) {
   const [conflicts, setConflicts] = useState(null);
   const [showCandidateCsPicker, setShowCandidateCsPicker] = useState(false);
   const [showCandidateSalesPicker, setShowCandidateSalesPicker] = useState(false);
+  // 候補日を新規追加する前の確認画面（編集時は表示しない）
+  const [showCandConfirm, setShowCandConfirm] = useState(false);
 
   // 確定モーダル（CS部員選択）
   const [showConfirmModal, setShowConfirmModal] = useState(false);
@@ -202,7 +204,8 @@ export default function DetailPage({ projectId, onBack, addToast, onRefresh }) {
     setShowAddForm(false);
   };
 
-  const handleAddCandidate = async (e) => {
+  // 「追加する」押下：入力チェック → 新規追加なら確認画面へ、編集ならそのまま保存
+  const handleAddCandidate = (e) => {
     e.preventDefault();
     if (conflicts?.blocked || conflicts?.sales_reps?.length >= 2) { addToast('この日程は登録できません', 'error'); return; }
     if (!(newCandidate.cs_members || []).length) { addToast('CS担当者を1名以上選択してください', 'error'); return; }
@@ -215,6 +218,13 @@ export default function DetailPage({ projectId, onBack, addToast, onRefresh }) {
       }
     }
 
+    if (!editingCandidateId) { setShowCandConfirm(true); return; }
+    saveCandidate();
+  };
+
+  // 実際の保存処理（確認画面の「この内容で登録する」、または編集の保存から呼ばれる）
+  const saveCandidate = async () => {
+    if (busy) return; // 二重登録防止
     setBusy(true);
     try {
       let updatedCands;
@@ -230,8 +240,13 @@ export default function DetailPage({ projectId, onBack, addToast, onRefresh }) {
       setEditingCandidateId(null);
       setConflicts(null);
       setShowAddForm(false);
+      setShowCandConfirm(false);
       onRefresh();
-    } catch (err) { addToast(err.message, 'error'); }
+    } catch (err) {
+      // 失敗時は確認画面を閉じて入力フォームに戻す（入力内容は保持）
+      setShowCandConfirm(false);
+      addToast(err.message, 'error');
+    }
     finally { setBusy(false); }
   };
 
@@ -256,16 +271,13 @@ export default function DetailPage({ projectId, onBack, addToast, onRefresh }) {
     // CS担当者必須チェック（すべての候補日に1名以上設定されているか）
     const missingCs = (project.candidates || []).some(c => !(c.cs_members || []).length);
     if (missingCs) { addToast('すべての候補日にCS担当者を1名以上設定してください', 'error'); return; }
-    // 不足の場合はモーダルで理由入力 / ちょうどの場合は即確認
-    if (currentCount < maxDays) {
-      setShortageReason('');
-      setShowFinalizeModal(true);
-    } else {
-      doFinalize('');
-    }
+    // 確認画面を表示（候補日が希望日数より少ない場合は、同じ画面で不足理由も入力）
+    setShortageReason('');
+    setShowFinalizeModal(true);
   };
 
   const doFinalize = async (reason) => {
+    if (busy) return; // 二重送信防止（メールが2通飛ばないように）
     setBusy(true);
     try {
       // shortage_reason を保存（cs_membersは各候補日の設定がfinalize時にサーバー側で自動集約される）
@@ -436,40 +448,109 @@ export default function DetailPage({ projectId, onBack, addToast, onRefresh }) {
         </div>
       )}
 
-      {/* 設定完了モーダル（候補日不足時の理由入力） */}
-      {showFinalizeModal && (
-        <div style={{ position:'fixed',inset:0,background:'rgba(0,0,0,0.7)',zIndex:300,display:'flex',alignItems:'center',justifyContent:'center',padding:16 }}>
+      {/* 候補日の新規追加の確認モーダル */}
+      {showCandConfirm && (
+        <div style={{ position:'fixed',inset:0,background:'rgba(0,0,0,0.7)',zIndex:300,display:'flex',alignItems:'center',justifyContent:'center',padding:16,overflowY:'auto' }}>
           <div style={{ background:'var(--glass-bg)',backdropFilter:'var(--glass-blur)',WebkitBackdropFilter:'var(--glass-blur)',border:'1px solid var(--glass-border)',borderRadius:20,padding:24,width:'100%',maxWidth:400 }}>
-            <div style={{ fontWeight:700,fontSize:'1.1rem',marginBottom:8,color:'var(--warning)' }}>
-              ⚠️ 候補日が希望日数より少ない状態で設定完了します
+            <div style={{ fontWeight:700,fontSize:'1.1rem',marginBottom:4 }}>候補日の登録内容の確認</div>
+            <div style={{ fontSize:'0.78rem',color:'var(--text-sub)',marginBottom:14 }}>
+              {project?.client_name}（{project?.case_id || ''}）／ 第{(project?.candidates?.length || 0) + 1}候補（希望候補日数：{project?.candidate_days || 1}日）
             </div>
-            <div style={{ fontSize:'0.82rem',color:'var(--text-sub)',marginBottom:16,lineHeight:1.6 }}>
-              希望候補日数：{project?.candidate_days || 1}日 ／ 現在の候補日：{project?.candidates?.length || 0}件<br />
-              やむを得ない理由がある場合は、以下に理由を入力して設定完了できます。
+            <div className="card" style={{ marginBottom:12 }}>
+              {[
+                ['日程', newCandidate.date_to && newCandidate.date_to !== newCandidate.date
+                  ? `${formatDate(newCandidate.date)}〜${formatDate(newCandidate.date_to)}`
+                  : formatDate(newCandidate.date)],
+                ['開始時刻', newCandidate.time || '指定なし'],
+                ['営業メンバー', newCandidate.sales_rep || project?.sales_rep || '—'],
+                ['CS部員', (newCandidate.cs_members || []).join('、') || '—'],
+              ].map(([k, v]) => (
+                <div key={k} style={{ display:'flex',gap:10,padding:'6px 0',borderBottom:'1px solid var(--border)',fontSize:'0.88rem' }}>
+                  <div style={{ width:84,flexShrink:0,color:'var(--text-sub)',fontSize:'0.78rem' }}>{k}</div>
+                  <div style={{ flex:1,fontWeight:600,wordBreak:'break-all' }}>{v}</div>
+                </div>
+              ))}
             </div>
-            <div className="form-group">
-              <label>不足理由 *</label>
-              <textarea
-                value={shortageReason}
-                onChange={e => setShortageReason(e.target.value)}
-                placeholder="希望日数を満たせなかった理由を入力してください"
-                style={{ minHeight:80 }}
-                autoFocus
-              />
-            </div>
+            {conflicts?.sales_reps?.length === 1 && (
+              <div style={{ fontSize:'0.78rem',color:'var(--warning)',marginBottom:12 }}>
+                ⚠️ この日時は {conflicts.sales_reps[0]}さんが仮抑え中です（登録は可能）
+              </div>
+            )}
             <div style={{ display:'flex',gap:8 }}>
-              <button className="btn btn-ghost" style={{ flex:1 }} onClick={() => { setShowFinalizeModal(false); setShortageReason(''); }}>
-                キャンセル
-              </button>
-              <button className="btn btn-warning" style={{ flex:1, background:'var(--warning)', color:'#fff' }}
-                onClick={() => { if (!shortageReason.trim()) { alert('不足理由を入力してください'); return; } doFinalize(shortageReason); }}
-                disabled={busy}>
-                {busy ? '処理中...' : '理由を入力して設定完了'}
+              <button type="button" className="btn btn-ghost" style={{ flex:1,whiteSpace:'nowrap' }} onClick={() => setShowCandConfirm(false)} disabled={busy}>← 修正する</button>
+              <button type="button" className="btn btn-primary" style={{ flex:2 }} onClick={saveCandidate} disabled={busy}>
+                {busy ? '登録中...' : 'この内容で登録する'}
               </button>
             </div>
           </div>
         </div>
       )}
+
+      {/* 候補日の設定完了の確認モーダル（不足時は理由入力も兼ねる） */}
+      {showFinalizeModal && (() => {
+        const maxD = project?.candidate_days || 1;
+        const list = project?.candidates || [];
+        const isShort = list.length < maxD;
+        const csAll = [...new Set(list.flatMap(c => c.cs_members || []))];
+        const handleOk = () => {
+          if (isShort && !shortageReason.trim()) { addToast('不足理由を入力してください', 'error'); return; }
+          doFinalize(isShort ? shortageReason.trim() : '');
+        };
+        return (
+          <div style={{ position:'fixed',inset:0,background:'rgba(0,0,0,0.7)',zIndex:300,display:'flex',alignItems:'center',justifyContent:'center',padding:16,overflowY:'auto' }}>
+            <div style={{ background:'var(--glass-bg)',backdropFilter:'var(--glass-blur)',WebkitBackdropFilter:'var(--glass-blur)',border:'1px solid var(--glass-border)',borderRadius:20,padding:24,width:'100%',maxWidth:420,maxHeight:'92vh',overflowY:'auto' }}>
+              <div style={{ fontWeight:700,fontSize:'1.1rem',marginBottom:4 }}>候補日の設定内容の確認</div>
+              <div style={{ fontSize:'0.78rem',color:'var(--text-sub)',marginBottom:14,lineHeight:1.6 }}>
+                {project?.client_name}{project?.case_id ? `（${project.case_id}）` : ''}<br />
+                担当営業：{project?.sales_rep || '—'} ／ 候補日 {list.length}/{maxD} 件
+              </div>
+
+              {list.map((c, idx) => (
+                <div key={c.id} className="card" style={{ marginBottom:8,padding:'10px 12px' }}>
+                  <div style={{ fontSize:'0.72rem',color:'var(--text-sub)',marginBottom:2 }}>{c.label || `第${idx + 1}候補`}</div>
+                  <div style={{ fontWeight:600,fontSize:'0.92rem' }}>{formatCandDate(c)}</div>
+                  <div style={{ fontSize:'0.75rem',color:'var(--text-sub)',marginTop:4,lineHeight:1.6 }}>
+                    👤 営業：{c.sales_rep || project?.sales_rep || '—'}<br />
+                    🛠 CS：{(c.cs_members || []).join('、') || '—'}
+                  </div>
+                </div>
+              ))}
+
+              {isShort && (
+                <div style={{ marginTop:12 }}>
+                  <div style={{ fontSize:'0.82rem',color:'var(--warning)',fontWeight:600,marginBottom:6 }}>
+                    ⚠️ 候補日が希望日数（{maxD}日）より{maxD - list.length}件少ない状態です
+                  </div>
+                  <div className="form-group">
+                    <label>不足理由 *</label>
+                    <textarea
+                      value={shortageReason}
+                      onChange={e => setShortageReason(e.target.value)}
+                      placeholder="希望日数を満たせなかった理由を入力してください"
+                      style={{ minHeight:70 }}
+                    />
+                  </div>
+                </div>
+              )}
+
+              <div style={{ fontSize:'0.75rem',color:'var(--text-sub)',margin:'10px 0 14px',lineHeight:1.6 }}>
+                ※「設定完了」すると、担当営業{csAll.length ? `とCS部員（${csAll.join('、')}）` : ''}に通知メールが送信されます。送信後の取り消しはできません。
+              </div>
+
+              <div style={{ display:'flex',gap:8 }}>
+                <button type="button" className="btn btn-ghost" style={{ flex:1,whiteSpace:'nowrap' }} disabled={busy}
+                  onClick={() => { setShowFinalizeModal(false); setShortageReason(''); }}>
+                  ← 修正する
+                </button>
+                <button type="button" className="btn btn-success" style={{ flex:2 }} onClick={handleOk}
+                  disabled={busy || (isShort && !shortageReason.trim())}>
+                  {busy ? '送信中...' : isShort ? '理由を添えて設定完了' : 'この内容で設定完了'}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* キャンセルモーダル */}
       {showCancelModal && (
@@ -770,7 +851,7 @@ export default function DetailPage({ projectId, onBack, addToast, onRefresh }) {
                 <button type="button" className="btn btn-ghost btn-sm" onClick={handleCancelEdit}>キャンセル</button>
                 <button type="submit" className="btn btn-primary btn-sm"
                   disabled={busy || conflicts?.blocked || conflicts?.sales_reps?.length >= 2 || !(newCandidate.cs_members||[]).length}>
-                  {editingCandidateId ? '修正を保存' : '追加する'}
+                  {editingCandidateId ? '修正を保存' : '確認画面へ'}
                 </button>
               </div>
             </form>
