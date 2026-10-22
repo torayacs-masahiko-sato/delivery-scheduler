@@ -82,6 +82,10 @@
   - 認証用シークレットはAES-256-GCMで暗号化して保存／同じコードの使い回しは拒否
   - ID・パスワード・認証コードのいずれかを5回連続で間違えると10分間ロック
   - 実装は `server/auth.js`（DB列は起動時に自動追加）
+- **Node.js のバージョン固定**：2026年10月のNode.jsセキュリティ修正（CVE-2026-111497 ほか計10件）を反映した 22.23.4 を `.node-version` で指定（`package.json` の `engines` も修正版以上に限定）。起動時に修正前のバージョンを検知するとログに 🚨 警告を出す
+- **多層防御**：Brotli（br）圧縮のリクエスト本文は 415 で拒否／Gmail API の応答は gzip・deflate のみ受け付け
+- **ライブラリの脆弱性**：サーバー側は `npm audit` で既知の脆弱性 0 件（2026-10-22時点）。nodemailer を 10.x に更新、uuid は Node 標準の `crypto.randomUUID` に置き換え、googleapis 内部の uuid は `overrides` で修正版に固定
+  - 画面側（client）に残る vite / esbuild の指摘は開発用サーバー（`npm run dev`）のみに関係し、本番で配信する画面には影響しない
 
 ---
 
