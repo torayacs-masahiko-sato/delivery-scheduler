@@ -1,7 +1,8 @@
 const express = require('express');
 const { Pool } = require('pg');
 const cors = require('cors');
-const { v4: uuidv4 } = require('uuid');
+// ID生成は Node 標準の crypto.randomUUID を使用（外部ライブラリ uuid の脆弱性対応で置き換え。生成されるIDの形式は従来と同じ）
+const uuidv4 = () => require('crypto').randomUUID();
 const path = require('path');
 const fs = require('fs');
 const { Resend } = require('resend');
@@ -12,6 +13,24 @@ const { createAuth } = require('./auth');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+
+// ── Node.js バージョン確認（2026年10月21日のセキュリティ修正版以上か）────────
+// 対象: CVE-2026-111497（Brotli展開の不具合によるリモートコード実行）ほか計10件。
+// 修正版: 22.23.4 / 24.22.1 / 26.12.1 以上。20.x 以前はサポート終了で修正版なし。
+// 古い場合も停止はさせず（業務を止めないため）、ログに目立つ警告を出す。
+(function checkNodeVersion() {
+  const PATCHED = { 22: [22, 23, 4], 24: [24, 22, 1], 26: [26, 12, 1] };
+  const cur = process.versions.node.split('.').map(Number);
+  const min = PATCHED[cur[0]];
+  const gte = (a, b) => a[0] !== b[0] ? a[0] > b[0] : a[1] !== b[1] ? a[1] > b[1] : a[2] >= b[2];
+  const ok = min ? gte(cur, min) : cur[0] > 26;
+  if (ok) console.log(`🛡 Node.js ${process.version}（セキュリティ修正済みバージョン）`);
+  else console.error(`🚨 Node.js ${process.version} は脆弱性修正前のバージョンです。22.23.4 / 24.22.1 / 26.12.1 以上へ更新してください（.node-version を確認）`);
+})();
+
+// 外部（Gmail API）からの応答をBrotli圧縮で受け取らないよう指定（多層防御）。
+// gzip/deflate のみ受け付ける。Node本体を更新すれば不要だが、念のため。
+google.options({ headers: { 'Accept-Encoding': 'gzip, deflate' } });
 
 if (!process.env.DATABASE_URL) { console.error('DATABASE_URL is not set.'); process.exit(1); }
 
@@ -611,7 +630,14 @@ async function initDB() {
 }
 
 app.use(cors());
-app.use(express.json());
+// Brotli（br）圧縮されたリクエスト本文は受け付けない（多層防御）。
+// 現在の Express 4 はもともと br を展開しないが、将来のライブラリ更新で展開されるようになっても安全なように明示的に拒否する。
+app.use((req, res, next) => {
+  const enc = String(req.headers['content-encoding'] || '').toLowerCase();
+  if (enc.includes('br')) return res.status(415).json({ error: 'この形式のデータは受け付けられません' });
+  next();
+});
+app.use(express.json({ limit: '100kb' })); // 上限を明示（従来の既定値と同じ）
 
 const CLIENT_BUILD = path.join(__dirname, '../client/dist');
 if (fs.existsSync(CLIENT_BUILD)) app.use(express.static(CLIENT_BUILD));
