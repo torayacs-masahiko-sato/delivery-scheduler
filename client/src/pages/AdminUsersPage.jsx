@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { api } from '../api';
 
 export default function AdminUsersPage({ addToast }) {
@@ -811,19 +812,58 @@ function TemplatesTab({ addToast }) {
 }
 
 
-// ── 多要素認証の状態表示とリセット（スマホ紛失・機種変更時に管理者が実施）──
+// ── 多要素認証・パスキーの状態表示（スマホ紛失・機種変更時に管理者がリセット／端末削除）──
 function MfaLine({ target, reload, addToast }) {
+  const [showPk, setShowPk] = useState(false);
   const handleReset = async () => {
     if (!confirm(`「${target.display_name}」の多要素認証をリセットしますか？\n\n次回ログイン時に、認証アプリの再設定が必要になります。本人確認のうえ実施してください。`)) return;
     try { await api.mfaReset(target.id); addToast('多要素認証をリセットしました'); await reload(); }
     catch (err) { addToast(err.message, 'error'); }
   };
+  const smallBtn = { padding: '1px 8px', fontSize: '0.7rem' };
   return (
-    <div style={{ fontSize: '0.72rem', color: 'var(--text-sub)', marginTop: 2, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-      <span>🔐 多要素認証: {target.mfa_enabled ? <b style={{ color: 'var(--success, #22c55e)' }}>有効</b> : '未設定'}</span>
-      {target.mfa_enabled && (
-        <button type="button" className="btn btn-ghost btn-sm" style={{ padding: '1px 8px', fontSize: '0.7rem' }} onClick={handleReset}>リセット</button>
-      )}
+    <div style={{ fontSize: '0.72rem', color: 'var(--text-sub)', marginTop: 2, display: 'flex', flexDirection: 'column', gap: 3 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <span>🔐 多要素認証: {target.mfa_enabled ? <b style={{ color: 'var(--success, #22c55e)' }}>有効</b> : '未設定'}</span>
+        {target.mfa_enabled && <button type="button" className="btn btn-ghost btn-sm" style={smallBtn} onClick={handleReset}>リセット</button>}
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <span>🔑 パスキー: {target.passkey_count ? <b>{target.passkey_count}台</b> : '未登録'}</span>
+        {target.passkey_count > 0 && <button type="button" className="btn btn-ghost btn-sm" style={smallBtn} onClick={() => setShowPk(true)}>端末を確認</button>}
+      </div>
+      {/* カードの装飾（ぼかし効果）の内側だと全画面表示にならないため、画面全体（body直下）に表示する */}
+      {showPk && createPortal(<UserPasskeysModal target={target} onClose={() => { setShowPk(false); reload(); }} addToast={addToast} />, document.body)}
+    </div>
+  );
+}
+
+function UserPasskeysModal({ target, onClose, addToast }) {
+  const [list, setList] = useState(null);
+  const load = () => api.userPasskeys(target.id).then(setList).catch(e => addToast(e.message, 'error'));
+  useEffect(() => { load(); }, []);
+  const fmt = (s) => s ? new Date(s).toLocaleString('ja-JP', { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '未使用';
+  const handleDelete = async (pk) => {
+    if (!confirm(`「${target.display_name}」の端末「${pk.device_name}」の登録を削除しますか？\n（紛失した端末などを無効にする場合に使います）`)) return;
+    try { await api.deleteUserPasskey(target.id, pk.id); addToast('端末の登録を削除しました'); await load(); }
+    catch (e) { addToast(e.message, 'error'); }
+  };
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 300, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16, color: 'var(--text)' }}>
+      <div style={{ background: 'var(--glass-bg)', backdropFilter: 'var(--glass-blur)', WebkitBackdropFilter: 'var(--glass-blur)', border: '1px solid var(--glass-border)', borderRadius: 20, padding: 24, width: '100%', maxWidth: 400 }}>
+        <div style={{ fontWeight: 700, fontSize: '1.05rem', marginBottom: 12 }}>🔑 {target.display_name} さんの登録端末</div>
+        {!list && <div style={{ fontSize: '0.85rem' }}>読み込み中...</div>}
+        {list && list.length === 0 && <div style={{ fontSize: '0.85rem', marginBottom: 12 }}>登録済みの端末はありません</div>}
+        {list && list.map(pk => (
+          <div key={pk.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', borderRadius: 8, border: '1px solid var(--border)', marginBottom: 6 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: '0.85rem', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pk.device_name}</div>
+              <div style={{ fontSize: '0.7rem', color: 'var(--text-sub)' }}>登録：{fmt(pk.created_at)} ／ 最終利用：{fmt(pk.last_used_at)}</div>
+            </div>
+            <button type="button" className="btn btn-danger btn-sm" onClick={() => handleDelete(pk)}>削除</button>
+          </div>
+        ))}
+        <button type="button" className="btn btn-ghost btn-full" style={{ marginTop: 8 }} onClick={onClose}>閉じる</button>
+      </div>
     </div>
   );
 }

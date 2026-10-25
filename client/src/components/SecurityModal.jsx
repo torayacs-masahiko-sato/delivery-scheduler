@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { api } from '../api';
 import { useAuth } from '../hooks/useAuth';
 import MfaSetup from './MfaSetup';
+import PasskeySection from './PasskeySection';
 
 const errBox = { color: 'var(--danger)', fontSize: '0.82rem', marginBottom: 12, padding: '8px 12px', background: 'rgba(239,68,68,0.08)', borderRadius: 8 };
 
@@ -47,6 +48,7 @@ export default function SecurityModal({ onClose, addToast }) {
 
         {status && mode === 'home' && (
           <>
+            <PasskeySection addToast={addToast} />
             <div className="card" style={{ marginBottom: 12 }}>
               <div style={{ fontWeight: 600, marginBottom: 4 }}>多要素認証（認証アプリ）</div>
               <div style={{ fontSize: '0.85rem' }}>

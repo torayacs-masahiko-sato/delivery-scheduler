@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { api } from '../api';
 import { useAuth } from '../hooks/useAuth';
 import MfaSetup from '../components/MfaSetup';
+import { passkeySupported, loginWithPasskey } from '../passkey';
 
 const errBox = { color: 'var(--danger)', fontSize: '0.82rem', marginBottom: 12, padding: '8px 12px', background: 'rgba(239,68,68,0.08)', borderRadius: 8 };
 
@@ -17,6 +18,17 @@ export default function LoginPage() {
   const [setupToken, setSetupToken] = useState('');
   const [code, setCode] = useState('');
   const [useBackup, setUseBackup] = useState(false);
+
+  const canPasskey = passkeySupported();
+
+  // 生体認証・パスキーでログイン（ID・パスワード・6桁コードの入力不要）
+  const handlePasskey = async () => {
+    setError('');
+    setLoading(true);
+    try { login(await loginWithPasskey()); }
+    catch (err) { setError(err.message); }
+    finally { setLoading(false); }
+  };
 
   const backToStart = (msg = '') => {
     setStage('password'); setPassword(''); setCode(''); setMfaToken(''); setSetupToken(''); setUseBackup(false); setError(msg);
@@ -82,6 +94,19 @@ export default function LoginPage() {
             <button className="btn btn-primary btn-full" type="submit" disabled={loading}>
               {loading ? 'ログイン中...' : 'ログイン'}
             </button>
+            {canPasskey && (
+              <>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '18px 0 12px', color: 'var(--text-sub)', fontSize: '0.75rem' }}>
+                  <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />または<div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
+                </div>
+                <button type="button" className="btn btn-ghost btn-full" onClick={handlePasskey} disabled={loading}>
+                  🔑 生体認証・パスキーでログイン
+                </button>
+                <div style={{ fontSize: '0.7rem', color: 'var(--text-sub)', textAlign: 'center', marginTop: 6, lineHeight: 1.5 }}>
+                  顔認証・指紋・端末のPINでログインできます（事前に端末の登録が必要です）
+                </div>
+              </>
+            )}
           </form>
         )}
 
