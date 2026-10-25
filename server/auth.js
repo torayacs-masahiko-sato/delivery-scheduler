@@ -8,10 +8,20 @@
  *   SESSION_SECRET      … ログイン済みトークンの署名鍵（未設定時は DATABASE_URL から自動生成）
  *   MFA_ENCRYPTION_KEY  … 認証アプリ用シークレットのDB保存時暗号化キー（未設定時は SESSION_SECRET を流用）
  *
- * 外部ライブラリは QR画像生成用の `qrcode` のみ。TOTP(RFC6238)・暗号化・署名は Node 標準の crypto で実装。
+ * 外部ライブラリ: QR画像生成用の `qrcode`、パスキー（WebAuthn）検証用の `@simplewebauthn/server`。
+ * TOTP(RFC6238)・暗号化・署名は Node 標準の crypto で実装。
+ *
+ * パスキー（生体認証・端末PINでのログイン）:
+ *   APP_BASE_URL（例 https://delivery-scheduler-c4cd.onrender.com）のドメインに紐づく。
+ *   URLを変更するとそれまでのパスキーは使えなくなる（登録し直しが必要）。
+ *   顔・指紋などの生体情報は端末内で照合されるだけで、サーバーには公開鍵しか保存しない。
  */
 const crypto = require('crypto');
 const QRCode = require('qrcode');
+const {
+  generateRegistrationOptions, verifyRegistrationResponse,
+  generateAuthenticationOptions, verifyAuthenticationResponse,
+} = require('@simplewebauthn/server');
 
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000; // ログインの有効時間: 12時間
 const MFA_TOKEN_TTL_MS = 5 * 60 * 1000;     // パスワード通過後〜コード入力までの猶予: 5分
@@ -332,12 +342,142 @@ function createAuth({ pool, bcrypt, express }) {
     res.json({ success: true });
   }));
 
+
+  // ══ パスキー（WebAuthn：顔認証・指紋認証・端末PIN）═══════════════════
+  // 本人確認（userVerification）を「必須」にしているため、パスキー1回で
+  // 「端末を持っている」＋「本人の顔・指紋・PIN」の2要素を満たす → 多要素認証として扱う。
+  const PK_BASE = new URL(process.env.APP_BASE_URL || 'https://delivery-scheduler-c4cd.onrender.com');
+  const PK_ORIGIN = PK_BASE.origin;
+  const PK_RPID = process.env.PASSKEY_RP_ID || PK_BASE.hostname;
+  const PK_RPNAME = ISSUER;
+  const PK_CHALLENGE_TTL_MS = 5 * 60 * 1000;
+  // 同じチャレンジ（使い捨ての乱数）を2回使わせないための記録（再起動で消えても有効期限5分なので実害なし）
+  const usedChallenges = new Map();
+  const consumeChallenge = (c) => {
+    const now = Date.now();
+    for (const [k, exp] of usedChallenges) if (exp < now) usedChallenges.delete(k);
+    if (usedChallenges.has(c)) return false;
+    usedChallenges.set(c, now + PK_CHALLENGE_TTL_MS);
+    return true;
+  };
+  const cleanName = (s) => String(s || '').replace(/[\u0000-\u001f<>]/g, '').trim().slice(0, 40) || 'この端末';
+  const pkRow = (r) => ({ id: r.id, device_name: r.device_name, created_at: r.created_at, last_used_at: r.last_used_at, backed_up: !!r.backed_up });
+
+  // 登録①：オプション発行（ログイン済みの本人のみ）
+  router.post('/api/passkey/register-options', wrap(async (req, res) => {
+    const u = await getUserById(req.auth.uid);
+    const existing = (await pool.query('SELECT id, transports FROM user_passkeys WHERE user_id=$1', [u.id])).rows;
+    const options = await generateRegistrationOptions({
+      rpName: PK_RPNAME,
+      rpID: PK_RPID,
+      userName: u.login_id || u.id,
+      userDisplayName: u.display_name || u.name || u.login_id,
+      userID: new TextEncoder().encode(u.id),
+      attestationType: 'none',
+      excludeCredentials: existing.map(c => ({ id: c.id, transports: JSON.parse(c.transports || '[]') })),
+      authenticatorSelection: { residentKey: 'required', userVerification: 'required' },
+    });
+    res.json({ options, challenge_token: signToken({ u: u.id, p: 'pk-reg', c: options.challenge }, PK_CHALLENGE_TTL_MS) });
+  }));
+
+  // 登録②：端末の応答を検証して保存
+  router.post('/api/passkey/register-verify', wrap(async (req, res) => {
+    const { response, challenge_token, device_name } = req.body || {};
+    const t = verifyToken(challenge_token, 'pk-reg');
+    if (!t || t.u !== req.auth.uid) return res.status(400).json({ error: '有効期限が切れました。もう一度「この端末を登録」からやり直してください' });
+    if (!consumeChallenge(t.c)) return res.status(400).json({ error: 'この登録操作はすでに使用済みです。やり直してください' });
+    let v;
+    try {
+      v = await verifyRegistrationResponse({
+        response, expectedChallenge: t.c, expectedOrigin: PK_ORIGIN, expectedRPID: PK_RPID, requireUserVerification: true,
+      });
+    } catch (e) {
+      console.warn('[passkey] register verify failed:', e.message);
+      return res.status(400).json({ error: '端末の登録を確認できませんでした。もう一度お試しください' });
+    }
+    if (!v.verified || !v.registrationInfo) return res.status(400).json({ error: '端末の登録を確認できませんでした' });
+    const { credential, credentialBackedUp } = v.registrationInfo;
+    await pool.query(
+      `INSERT INTO user_passkeys (id, user_id, public_key, counter, transports, device_name, backed_up)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (id) DO NOTHING`,
+      [credential.id, req.auth.uid, Buffer.from(credential.publicKey).toString('base64url'), credential.counter || 0,
+       JSON.stringify(credential.transports || response?.response?.transports || []), cleanName(device_name), !!credentialBackedUp]);
+    console.log(`[passkey] registered: user=${req.auth.uid}`);
+    res.json({ success: true });
+  }));
+
+  // 自分の登録端末一覧・削除
+  router.get('/api/passkey/list', wrap(async (req, res) => {
+    const { rows } = await pool.query('SELECT * FROM user_passkeys WHERE user_id=$1 ORDER BY created_at', [req.auth.uid]);
+    res.json(rows.map(pkRow));
+  }));
+  router.delete('/api/passkey/:pkId', wrap(async (req, res) => {
+    const r = await pool.query('DELETE FROM user_passkeys WHERE id=$1 AND user_id=$2', [req.params.pkId, req.auth.uid]);
+    if (!r.rowCount) return res.status(404).json({ error: '登録端末が見つかりません' });
+    res.json({ success: true });
+  }));
+
+  // 管理者：各メンバーの登録端末の確認・削除（端末紛失時など）
+  router.get('/api/users/:id/passkeys', wrap(async (req, res) => {
+    const { rows } = await pool.query('SELECT * FROM user_passkeys WHERE user_id=$1 ORDER BY created_at', [req.params.id]);
+    res.json(rows.map(pkRow));
+  }));
+  router.delete('/api/users/:id/passkeys/:pkId', wrap(async (req, res) => {
+    const r = await pool.query('DELETE FROM user_passkeys WHERE id=$1 AND user_id=$2', [req.params.pkId, req.params.id]);
+    if (!r.rowCount) return res.status(404).json({ error: '登録端末が見つかりません' });
+    console.log(`[passkey] deleted by admin: target=${req.params.id} by=${req.auth.uid}`);
+    res.json({ success: true });
+  }));
+
+  // ログイン①：オプション発行（ID入力不要。端末側が登録済みのパスキーを提示する）
+  router.post('/api/auth/passkey/options', wrap(async (_req, res) => {
+    const options = await generateAuthenticationOptions({ rpID: PK_RPID, userVerification: 'required', allowCredentials: [] });
+    res.json({ options, challenge_token: signToken({ p: 'pk-auth', c: options.challenge }, PK_CHALLENGE_TTL_MS) });
+  }));
+
+  // ログイン②：署名を検証してログイン完了
+  router.post('/api/auth/passkey/verify', wrap(async (req, res) => {
+    const { response, challenge_token } = req.body || {};
+    const t = verifyToken(challenge_token, 'pk-auth');
+    if (!t) return res.status(400).json({ error: '有効期限が切れました。もう一度お試しください' });
+    const credId = response && typeof response.id === 'string' ? response.id : '';
+    const cred = credId && (await pool.query('SELECT * FROM user_passkeys WHERE id=$1', [credId])).rows[0];
+    if (!cred) return res.status(401).json({ error: 'この端末のパスキーは登録されていないか、削除されています。ID・パスワードでログインしてください' });
+    const u = await getUserById(cred.user_id);
+    if (!u) return res.status(401).json({ error: 'ユーザーが見つかりません' });
+    const lock = lockedMessage(u);
+    if (lock) return res.status(429).json({ error: lock });
+    if (!consumeChallenge(t.c)) return res.status(400).json({ error: 'このログイン操作はすでに使用済みです。もう一度お試しください' });
+
+    let v;
+    try {
+      v = await verifyAuthenticationResponse({
+        response, expectedChallenge: t.c, expectedOrigin: PK_ORIGIN, expectedRPID: PK_RPID, requireUserVerification: true,
+        credential: {
+          id: cred.id,
+          publicKey: new Uint8Array(Buffer.from(cred.public_key, 'base64url')),
+          counter: Number(cred.counter) || 0,
+          transports: JSON.parse(cred.transports || '[]'),
+        },
+      });
+    } catch (e) {
+      console.warn('[passkey] auth verify failed:', e.message);
+      await recordFail(u);
+      return res.status(401).json({ error: '生体認証でのログインを確認できませんでした' });
+    }
+    if (!v.verified) { await recordFail(u); return res.status(401).json({ error: '生体認証でのログインを確認できませんでした' }); }
+    await pool.query('UPDATE user_passkeys SET counter=$2, last_used_at=NOW() WHERE id=$1', [cred.id, v.authenticationInfo.newCounter || 0]);
+    await resetFails(u);
+    res.json(sessionUser(u));
+  }));
+
   // ── 全 /api 共通のガード ────────────────────────────────────
-  const PUBLIC = new Set(['/health', '/auth/login', '/auth/mfa/verify', '/auth/mfa/setup-start', '/auth/mfa/setup-confirm']);
+  const PUBLIC = new Set(['/health', '/auth/login', '/auth/mfa/verify', '/auth/mfa/setup-start', '/auth/mfa/setup-confirm', '/auth/passkey/options', '/auth/passkey/verify']);
   const isAdminOnly = (method, p) => {
     if (/^\/admins(\/|$)/.test(p)) return true;
     if (/^\/settings(\/|$)/.test(p)) return true;
     if (/^\/users\/[^/]+\/mfa-reset$/.test(p)) return true;
+    if (/^\/users\/[^/]+\/passkeys(\/|$)/.test(p)) return true;   // 他人の登録端末の確認・削除は管理者のみ
     if (method !== 'GET' && /^\/(users|cs-members|blocked-dates)(\/|$)/.test(p)) return true;
     return false;
   };

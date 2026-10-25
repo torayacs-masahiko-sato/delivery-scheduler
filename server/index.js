@@ -497,6 +497,18 @@ async function initDB() {
         created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+      CREATE TABLE IF NOT EXISTS user_passkeys (
+        id            TEXT PRIMARY KEY,            -- 端末が発行した認証情報ID
+        user_id       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        public_key    TEXT NOT NULL,               -- 公開鍵のみ保存（生体情報は保存しない）
+        counter       BIGINT NOT NULL DEFAULT 0,
+        transports    TEXT DEFAULT '[]',
+        device_name   TEXT DEFAULT '',
+        backed_up     BOOLEAN DEFAULT FALSE,
+        created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        last_used_at  TIMESTAMPTZ
+      );
+      CREATE INDEX IF NOT EXISTS idx_user_passkeys_user ON user_passkeys(user_id);
       CREATE TABLE IF NOT EXISTS project_messages (
         id              TEXT PRIMARY KEY,
         project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -617,7 +629,7 @@ async function initDB() {
     // ── RLS（Row Level Security）を全テーブルで有効化 ─────────────
     // アプリは postgres ロールで直接接続するため RLS の影響を受けず、動作は変わらない。
     // Supabase の PostgREST 経由の外部アクセスのみをブロックする（Lint: "RLS Disabled in Public" 対策）。
-    const rlsTables = ['users', 'projects', 'schedule_candidates', 'blocked_dates', 'settings', 'case_id_counters', 'project_messages'];
+    const rlsTables = ['users', 'projects', 'schedule_candidates', 'blocked_dates', 'settings', 'case_id_counters', 'project_messages', 'user_passkeys'];
     for (const t of rlsTables) {
       await client.query(`ALTER TABLE ${t} ENABLE ROW LEVEL SECURITY`).catch(e => {
         console.error(`[RLS] ${t} の有効化に失敗:`, e.message);
@@ -664,7 +676,7 @@ async function upsertUser(id, { display_name, login_id, password, email, area, r
 
 // ── 営業 CRUD ─────────────────────────────────────────────────
 app.get('/api/users', async (_req, res) => {
-  const { rows } = await pool.query("SELECT id,display_name,login_id,email,area,mfa_enabled FROM users WHERE role='sales' ORDER BY display_name");
+  const { rows } = await pool.query("SELECT id,display_name,login_id,email,area,mfa_enabled,(SELECT COUNT(*)::int FROM user_passkeys k WHERE k.user_id=users.id) AS passkey_count FROM users WHERE role='sales' ORDER BY display_name");
   res.json(rows);
 });
 app.post('/api/users', async (req, res) => {
@@ -701,7 +713,7 @@ app.delete('/api/users/:id', async (req, res) => {
 
 // ── 管理者 CRUD ───────────────────────────────────────────────
 app.get('/api/admins', async (_req, res) => {
-  const { rows } = await pool.query("SELECT id,display_name,login_id,email,area,mfa_enabled FROM users WHERE role='admin' ORDER BY display_name");
+  const { rows } = await pool.query("SELECT id,display_name,login_id,email,area,mfa_enabled,(SELECT COUNT(*)::int FROM user_passkeys k WHERE k.user_id=users.id) AS passkey_count FROM users WHERE role='admin' ORDER BY display_name");
   res.json(rows);
 });
 app.post('/api/admins', async (req, res) => {
@@ -740,7 +752,7 @@ app.delete('/api/admins/:id', async (req, res) => {
 
 // ── CS部員 CRUD ───────────────────────────────────────────────
 app.get('/api/cs-members', async (_req, res) => {
-  const { rows } = await pool.query("SELECT id,display_name,login_id,email,area,mfa_enabled FROM users WHERE role='cs' ORDER BY area, display_name");
+  const { rows } = await pool.query("SELECT id,display_name,login_id,email,area,mfa_enabled,(SELECT COUNT(*)::int FROM user_passkeys k WHERE k.user_id=users.id) AS passkey_count FROM users WHERE role='cs' ORDER BY area, display_name");
   res.json(rows);
 });
 app.post('/api/cs-members', async (req, res) => {
