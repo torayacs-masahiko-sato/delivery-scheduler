@@ -82,6 +82,14 @@
   - 認証用シークレットはAES-256-GCMで暗号化して保存／同じコードの使い回しは拒否
   - ID・パスワード・認証コードのいずれかを5回連続で間違えると10分間ロック
   - 実装は `server/auth.js`（DB列は起動時に自動追加）
+- **パスキー（生体認証・端末PIN）ログイン**：顔認証・指紋・端末のPIN（Face ID / Touch ID / Windows Hello / Android の生体認証など）でログイン
+  - 全員（営業・CS・管理者）が任意で利用可。ログイン後、ヘッダーの 🔐 →「この端末を登録する」で登録（1人で複数端末可）
+  - ログイン画面の「🔑 生体認証・パスキーでログイン」から、ID・パスワード・6桁コードなしでログイン
+  - 本人確認（顔・指紋・PIN）を必須にしているため、多要素認証を満たす扱い（管理者も6桁コード不要）
+  - 生体情報は端末内で照合されるだけで、サーバーには公開鍵のみ保存（`user_passkeys` テーブル、RLS適用）
+  - 管理者は「メンバー」画面で各メンバーの登録端末を確認・削除可能（端末紛失時）
+  - パスキーは `APP_BASE_URL` のドメインに紐づく。**URL（ドメイン）を変更すると全員の登録し直しが必要**
+  - 従来の ID＋パスワード（＋6桁コード）でのログインも引き続き利用可能
 - **Node.js のバージョン固定**：2026年10月のNode.jsセキュリティ修正（CVE-2026-111497 ほか計10件）を反映した 22.23.4 を `.node-version` で指定（`package.json` の `engines` も修正版以上に限定）。起動時に修正前のバージョンを検知するとログに 🚨 警告を出す
 - **多層防御**：Brotli（br）圧縮のリクエスト本文は 415 で拒否／Gmail API の応答は gzip・deflate のみ受け付け
 - **ライブラリの脆弱性**：サーバー側は `npm audit` で既知の脆弱性 0 件（2026-10-22時点）。nodemailer を 10.x に更新、uuid は Node 標準の `crypto.randomUUID` に置き換え、googleapis 内部の uuid は `overrides` で修正版に固定
@@ -150,7 +158,7 @@ git push
 | `DATABASE_URL` | ✅ | Supabase の接続URL（`postgresql://postgres:パスワード@...`） |
 | `SESSION_SECRET` | 推奨 | ログイントークンの署名鍵。ランダムな長い文字列（32文字以上）を設定。未設定時は `DATABASE_URL` から自動生成（動作はするが、設定を推奨） |
 | `MFA_ENCRYPTION_KEY` | 推奨 | 認証アプリ用シークレットの暗号化キー。ランダムな長い文字列。**設定後に変更すると既存の多要素認証が使えなくなる（全員リセットが必要）ので、一度決めたら変えないこと** |
-| `APP_BASE_URL` | 任意 | メール内リンクのベースURL（未設定時は `https://delivery-scheduler-c4cd.onrender.com`） |
+| `APP_BASE_URL` | 任意 | メール内リンクのベースURL兼パスキーの紐づけ先（未設定時は `https://delivery-scheduler-c4cd.onrender.com`）。**実際にアクセスするURLと一致させること**（不一致だとパスキーが使えない） |
 | `GMAIL_CLIENT_ID` | メール送信に必須 | Google Cloud OAuthクライアント（種類：ウェブアプリケーション） |
 | `GMAIL_CLIENT_SECRET` | メール送信に必須 | 同上 |
 | `GMAIL_REFRESH_TOKEN` | メール送信に必須 | OAuth Playgroundなどで取得したリフレッシュトークン |
