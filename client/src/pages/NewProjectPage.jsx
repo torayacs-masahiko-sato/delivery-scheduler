@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { api } from '../api';
 import { useAuth } from '../hooks/useAuth';
 import StaffPicker from '../components/StaffPicker';
+import { UrlListEditor, validateUrlRows, cleanUrlRows } from '../components/UrlListEditor';
 
 const DELIVERY_LABELS = { remote: '🖥 リモート', onsite: '🚗 現地訪問' };
 const PROJECT_TYPES = ['新規納品', '増設納品', 'PC入替え', 'I/O機器納品', '打合せ', '調査'];
@@ -13,7 +14,8 @@ export default function NewProjectPage({ onSaved, addToast }) {
     project_type: [],
     sales_rep: user.role === 'sales' ? user.name : '',
     memo: '',
-    client_url: '',
+    // 関連URL（複数）。コメントで「契約場所」「納品場所」などの意味を付けられる。最初は空の1行を表示
+    client_urls: [{ url: '', label: '' }],
     delivery_method: 'remote',
     candidate_days: 1,
   });
@@ -50,9 +52,8 @@ export default function NewProjectPage({ onSaved, addToast }) {
   const validate = () => {
     if (!form.project_type.length) { addToast('案件内容を1つ以上選択してください', 'error'); return false; }
     if (!form.client_name?.trim()) { addToast('顧客名を入力してください', 'error'); return false; }
-    if (form.client_url?.trim() && !/^https?:\/\//i.test(form.client_url.trim())) {
-      addToast('顧客情報URLは http:// または https:// から入力してください', 'error'); return false;
-    }
+    const urlError = validateUrlRows(form.client_urls);
+    if (urlError) { addToast(urlError, 'error'); return false; }
     if (!form.memo?.trim()) { addToast('備考を入力してください', 'error'); return false; }
     if (!resolveSalesRep()?.trim()) { addToast('担当営業を選択してください', 'error'); return false; }
     return true;
@@ -80,7 +81,7 @@ export default function NewProjectPage({ onSaved, addToast }) {
     try {
       // 複数選択された案件内容は「・」区切りの1つの文字列として保存する
       const project_type = form.project_type.join('・');
-      await api.createProject({ ...form, project_type, sales_rep: resolveSalesRep(), candidates: [] });
+      await api.createProject({ ...form, project_type, client_urls: cleanUrlRows(form.client_urls), sales_rep: resolveSalesRep(), candidates: [] });
       addToast('案件を登録しました');
       onSaved();
     } catch (err) {
@@ -96,9 +97,14 @@ export default function NewProjectPage({ onSaved, addToast }) {
     const rows = [
       { label: '顧客名', value: form.client_name.trim() },
       {
-        label: '顧客情報URL',
-        value: form.client_url.trim()
-          ? <span style={{ wordBreak: 'break-all', color: 'var(--accent-lt)' }}>{form.client_url.trim()}</span>
+        label: '関連URL',
+        value: cleanUrlRows(form.client_urls).length
+          ? cleanUrlRows(form.client_urls).map((r, i) => (
+              <div key={i} style={{ marginBottom: 6 }}>
+                <div style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--text-sub)' }}>{r.label || '（コメントなし）'}</div>
+                <div style={{ wordBreak: 'break-all', color: 'var(--accent-lt)' }}>{r.url}</div>
+              </div>
+            ))
           : <span style={{ color: 'var(--text-sub)' }}>未入力</span>,
       },
       { label: '案件内容', value: form.project_type.join('・') },
@@ -164,13 +170,11 @@ export default function NewProjectPage({ onSaved, addToast }) {
           </div>
 
           <div className="form-group">
-            <label>顧客情報URL（任意）</label>
-            <input
-              type="url"
-              value={form.client_url}
-              onChange={e => setField('client_url', e.target.value)}
-              placeholder="https://example.com/customer/123"
-            />
+            <label>関連URL（任意・複数可）</label>
+            <div style={{ fontSize: '0.74rem', color: 'var(--text-sub)', marginBottom: 6, lineHeight: 1.5 }}>
+              顧客情報・契約場所・納品場所などのURLを登録できます。コメントでそれぞれの内容を書いておくと分かりやすくなります。
+            </div>
+            <UrlListEditor rows={form.client_urls} onChange={v => setField('client_urls', v)} idPrefix="new-project" />
           </div>
 
           <div className="form-group">

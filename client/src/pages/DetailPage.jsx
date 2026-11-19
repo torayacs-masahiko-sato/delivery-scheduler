@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { UrlListEditor, UrlListView, validateUrlRows, cleanUrlRows } from '../components/UrlListEditor';
 import { api } from '../api';
 import { useAuth } from '../hooks/useAuth';
 import { StatusBadge, formatDate, formatDateTime, STATUS_MAP } from '../components/StatusBadge';
@@ -23,6 +24,9 @@ export default function DetailPage({ projectId, onBack, addToast, onRefresh }) {
   const [showCandidateSalesPicker, setShowCandidateSalesPicker] = useState(false);
   // 候補日を新規追加する前の確認画面（編集時は表示しない）
   const [showCandConfirm, setShowCandConfirm] = useState(false);
+  // 関連URLの編集画面
+  const [showUrlEditor, setShowUrlEditor] = useState(false);
+  const [urlDraft, setUrlDraft] = useState([]);
 
   // 確定モーダル（CS部員選択）
   const [showConfirmModal, setShowConfirmModal] = useState(false);
@@ -57,6 +61,9 @@ export default function DetailPage({ projectId, onBack, addToast, onRefresh }) {
     api.getProject(projectId).then(p => {
       setProject(p);
       setSelectedCs(p.cs_members || []);
+    }).catch(err => {
+      // 権限がない案件（他の営業の案件など）や削除済みの案件を開いた場合は理由を表示する
+      addToast(err.message, 'error');
     }).finally(() => setLoading(false));
   };
   useEffect(() => {
@@ -317,20 +324,23 @@ export default function DetailPage({ projectId, onBack, addToast, onRefresh }) {
     finally { setBusy(false); }
   };
 
-  // 顧客情報URLの登録・編集（管理者・担当営業）
-  const handleEditClientUrl = async () => {
-    const next = window.prompt('顧客情報のURLを入力してください（空にすると削除されます）', project.client_url || '');
-    if (next === null) return; // キャンセル
-    const trimmed = next.trim();
-    if (trimmed && !/^https?:\/\//i.test(trimmed)) {
-      addToast('URLは http:// または https:// から入力してください', 'error'); return;
-    }
+  // 関連URLの編集（管理者・担当営業）。編集用の小さな画面を開き、行の追加・削除・コメント入力ができる
+  const openUrlEditor = () => {
+    const current = project.client_urls || [];
+    setUrlDraft(current.length ? current.map(r => ({ url: r.url || '', label: r.label || '' })) : [{ url: '', label: '' }]);
+    setShowUrlEditor(true);
+  };
+  const handleSaveUrls = async () => {
+    const err = validateUrlRows(urlDraft);
+    if (err) { addToast(err, 'error'); return; }
+    if (busy) return;
     setBusy(true);
     try {
-      const updated = await api.updateProject(projectId, { client_url: trimmed });
+      const updated = await api.updateProject(projectId, { client_urls: cleanUrlRows(urlDraft) });
       setProject(p => ({ ...p, ...updated, candidates: p.candidates }));
-      addToast(trimmed ? '顧客情報URLを更新しました' : '顧客情報URLを削除しました');
-    } catch (err) { addToast(err.message, 'error'); }
+      setShowUrlEditor(false);
+      addToast('関連URLを更新しました');
+    } catch (e) { addToast(e.message, 'error'); }   // 失敗時は編集画面を開いたまま（入力内容は残る）
     finally { setBusy(false); }
   };
 
@@ -370,9 +380,11 @@ export default function DetailPage({ projectId, onBack, addToast, onRefresh }) {
 
   const handleDelete = async () => {
     if (!confirm('この案件を削除しますか？')) return;
-    await api.deleteProject(projectId);
-    addToast('案件を削除しました');
-    onRefresh(); onBack();
+    try {
+      await api.deleteProject(projectId);
+      addToast('案件を削除しました');
+      onRefresh(); onBack();
+    } catch (err) { addToast(err.message, 'error'); }
   };
 
   if (loading) return <div className="empty-state">読み込み中...</div>;
@@ -443,6 +455,23 @@ export default function DetailPage({ projectId, onBack, addToast, onRefresh }) {
               <button className="btn btn-success" style={{ flex:1 }} onClick={handleConfirmSchedule} disabled={busy}>
                 {busy ? '確定中...' : '確定する'}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 関連URLの編集モーダル */}
+      {showUrlEditor && (
+        <div style={{ position:'fixed',inset:0,background:'rgba(0,0,0,0.7)',zIndex:300,display:'flex',alignItems:'center',justifyContent:'center',padding:16,overflowY:'auto' }}>
+          <div style={{ background:'var(--glass-bg)',backdropFilter:'var(--glass-blur)',WebkitBackdropFilter:'var(--glass-blur)',border:'1px solid var(--glass-border)',borderRadius:20,padding:24,width:'100%',maxWidth:440,maxHeight:'92vh',overflowY:'auto' }}>
+            <div style={{ fontWeight:700,fontSize:'1.1rem',marginBottom:4 }}>関連URLの編集</div>
+            <div style={{ fontSize:'0.76rem',color:'var(--text-sub)',marginBottom:12,lineHeight:1.6 }}>
+              URLごとにコメント（例：契約場所、納品場所）を付けられます。不要な行は「✕ 削除」で消してください。
+            </div>
+            <UrlListEditor rows={urlDraft} onChange={setUrlDraft} idPrefix="detail" />
+            <div style={{ display:'flex',gap:8,marginTop:16 }}>
+              <button type="button" className="btn btn-ghost" style={{ flex:1,whiteSpace:'nowrap' }} onClick={() => setShowUrlEditor(false)} disabled={busy}>キャンセル</button>
+              <button type="button" className="btn btn-primary" style={{ flex:2 }} onClick={handleSaveUrls} disabled={busy}>{busy ? '保存中...' : '保存する'}</button>
             </div>
           </div>
         </div>
@@ -648,19 +677,12 @@ export default function DetailPage({ projectId, onBack, addToast, onRefresh }) {
         {(isOwner || isAdmin) && (
           <div className="meta-item" style={{ gridColumn:'1/-1' }}>
             <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-              <div className="meta-label">顧客情報URL</div>
-              <button className="btn btn-ghost btn-sm" onClick={handleEditClientUrl} disabled={busy} style={{ padding:'2px 8px', fontSize:'0.72rem' }}>
-                {project.client_url ? '編集' : '+ 追加'}
+              <div className="meta-label">関連URL</div>
+              <button className="btn btn-ghost btn-sm" onClick={openUrlEditor} disabled={busy} style={{ padding:'2px 8px', fontSize:'0.72rem' }}>
+                {(project.client_urls || []).length ? '編集' : '+ 追加'}
               </button>
             </div>
-            {project.client_url ? (
-              <a href={project.client_url} target="_blank" rel="noopener noreferrer"
-                className="meta-value" style={{ color:'var(--accent-lt)', wordBreak:'break-all', display:'block' }}>
-                🔗 {project.client_url}
-              </a>
-            ) : (
-              <div className="meta-value" style={{ color:'var(--text-sub)' }}>未登録</div>
-            )}
+            <div style={{ marginTop: 4 }}><UrlListView rows={project.client_urls} /></div>
           </div>
         )}
         {(project.cs_members||[]).length > 0 && (
