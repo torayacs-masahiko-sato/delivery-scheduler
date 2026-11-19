@@ -145,7 +145,8 @@ function createAuth({ pool, bcrypt, express }) {
     role: u.role,
     area: u.area || '東京',
     mfa_enabled: !!u.mfa_enabled,
-    token: signToken({ u: u.id, p: 'session' }, SESSION_TTL_MS),
+    // i = 発行時刻。パスワード変更より前に発行されたログインを無効にするために使う
+    token: signToken({ u: u.id, p: 'session', i: Date.now() }, SESSION_TTL_MS),
   });
 
   const getUserById = async (id) => (await pool.query('SELECT * FROM users WHERE id=$1', [id])).rows[0];
@@ -479,6 +480,8 @@ function createAuth({ pool, bcrypt, express }) {
     if (/^\/users\/[^/]+\/mfa-reset$/.test(p)) return true;
     if (/^\/users\/[^/]+\/passkeys(\/|$)/.test(p)) return true;   // 他人の登録端末の確認・削除は管理者のみ
     if (method !== 'GET' && /^\/(users|cs-members|blocked-dates)(\/|$)/.test(p)) return true;
+    // 案件の管理者専用操作（候補日の追加・編集・削除・設定完了、確定後のCS変更、日程確定の催促）
+    if (/^\/projects\/[^/]+\/(candidates|cs-members|remind-confirm)(\/|$)/.test(p)) return true;
     return false;
   };
   async function guard(req, res, next) {
@@ -487,9 +490,15 @@ function createAuth({ pool, bcrypt, express }) {
     const p = m && verifyToken(m[1], 'session');
     if (!p) return res.status(401).json({ error: 'ログインの有効期限が切れました。もう一度ログインしてください', auth: true });
     try {
-      const u = await pool.query('SELECT role FROM users WHERE id=$1', [p.u]);
-      if (!u.rows[0]) return res.status(401).json({ error: 'ログインの有効期限が切れました。もう一度ログインしてください', auth: true });
-      req.auth = { uid: p.u, role: u.rows[0].role };
+      const u = await pool.query('SELECT role, display_name, name, login_id, password_changed_at FROM users WHERE id=$1', [p.u]);
+      const row = u.rows[0];
+      if (!row) return res.status(401).json({ error: 'ログインの有効期限が切れました。もう一度ログインしてください', auth: true });
+      // パスワード変更より前に発行されたログインは無効（変更前のパスワードで入った端末を締め出す）
+      if (row.password_changed_at && (p.i || 0) < new Date(row.password_changed_at).getTime()) {
+        return res.status(401).json({ error: 'パスワードが変更されたため、もう一度ログインしてください', auth: true });
+      }
+      // 以降の処理は、画面から送られた名前ではなく、ここで確認した本人情報で権限を判定する
+      req.auth = { uid: p.u, role: row.role, name: row.display_name || row.name || '', login_id: row.login_id };
     } catch (err) {
       console.error('[auth] guard error:', err);
       return res.status(500).json({ error: 'サーバーエラーが発生しました' });
