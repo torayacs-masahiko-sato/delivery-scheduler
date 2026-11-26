@@ -699,6 +699,7 @@ const TEMPLATE_LABELS = {
   auto_cancel_warning: { label: '⚠️ 自動キャンセル警告', desc: '強制キャンセル前日の通知' },
   auto_cancelled:      { label: '⏰ 自動キャンセル通知', desc: '10営業日経過で自動キャンセルされたとき' },
   cs_members_changed:  { label: '🔁 CS担当変更', desc: '管理者が確定済み案件のCS担当者を変更したとき' },
+  schedule_changed:    { label: '📅 日程変更', desc: '管理者が確定済み案件の確定日時を変更したとき（通知ありの場合）' },
   confirm_reminder:    { label: '📣 日程確定の催促', desc: '管理者が仮スケ設定済み案件の営業担当へ確定を催促したとき' },
   project_message:     { label: '💬 新着メッセージ', desc: '案件内で営業⇔管理者がメッセージを送信したとき' },
 };
@@ -711,6 +712,7 @@ const AVAILABLE_VARS = {
   auto_cancel_warning: ['case_id', 'project_type', 'client_name', 'sales_rep', 'deadline_date', 'detail_url'],
   auto_cancelled:      ['case_id', 'project_type', 'client_name', 'sales_rep', 'detail_url'],
   cs_members_changed:  ['case_id', 'project_type', 'client_name', 'sales_rep', 'confirmed_date', 'old_cs_members', 'new_cs_members', 'detail_url'],
+  schedule_changed:    ['case_id', 'project_type', 'client_name', 'sales_rep', 'cs_members', 'old_confirmed_date', 'new_confirmed_date', 'detail_url'],
   confirm_reminder:    ['case_id', 'project_type', 'client_name', 'sales_rep', 'candidate_days', 'candidate_list', 'detail_url'],
   project_message:     ['case_id', 'project_type', 'client_name', 'sales_rep', 'sender_name', 'message_body', 'detail_url'],
 };

@@ -65,7 +65,7 @@ export default function DashboardPage({ onNavigate }) {
 
   const filtered = projects.filter(p => {
     if (p.status !== statusFilter) return false;
-    if (user.role === 'sales') return p.sales_rep === user.name;
+    if (user.role === 'sales') return (p.sales_rep === user.name || p.requested_by === user.name);
 
     // 管理者：CS部員個別指定があれば対象案件を絞り込み（案件レベル・候補日レベルどちらのCS割当も対象）
     if (csFilter !== 'all') {

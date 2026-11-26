@@ -4,8 +4,7 @@ import { useAuth } from '../hooks/useAuth';
 import StaffPicker from '../components/StaffPicker';
 import { UrlListEditor, validateUrlRows, cleanUrlRows } from '../components/UrlListEditor';
 
-const DELIVERY_LABELS = { remote: '🖥 リモート', onsite: '🚗 現地訪問' };
-const PROJECT_TYPES = ['新規納品', '増設納品', 'PC入替え', 'I/O機器納品', '打合せ', '調査'];
+import { PROJECT_TYPES, DELIVERY_LABELS } from '../constants';
 
 export default function NewProjectPage({ onSaved, addToast }) {
   const { user } = useAuth();

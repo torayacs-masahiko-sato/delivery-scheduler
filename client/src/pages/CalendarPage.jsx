@@ -42,7 +42,7 @@ export default function CalendarPage({ onNavigate }) {
   salesUsers.forEach(u => { areaByName[u.display_name] = u.area || '東京'; });
 
   const visibleProjects = projects.filter(p => {
-    if (scope === 'mine') return p.sales_rep === user.name;
+    if (scope === 'mine') return (p.sales_rep === user.name || p.requested_by === user.name);
     if (scope !== 'all') return p.sales_rep === scope; // 管理者のメンバー個別指定
     // scope === 'all'：管理者のエリア絞り込みを適用
     if (user.role === 'admin' && areaFilter !== 'all') {

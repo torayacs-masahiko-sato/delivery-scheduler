@@ -1,11 +1,12 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
+import ProjectEditModal from '../components/ProjectEditModal';
 import { UrlListEditor, UrlListView, validateUrlRows, cleanUrlRows } from '../components/UrlListEditor';
 import { api } from '../api';
 import { useAuth } from '../hooks/useAuth';
 import { StatusBadge, formatDate, formatDateTime, STATUS_MAP } from '../components/StatusBadge';
 import StaffPicker from '../components/StaffPicker';
 
-const DELIVERY_LABELS = { remote: '🖥 リモート', onsite: '🚗 現地訪問' };
+import { DELIVERY_LABELS } from '../constants';
 
 export default function DetailPage({ projectId, onBack, addToast, onRefresh }) {
   const { user } = useAuth();
@@ -50,6 +51,15 @@ export default function DetailPage({ projectId, onBack, addToast, onRefresh }) {
   const [messagesLoading, setMessagesLoading] = useState(true);
   const [messageInput, setMessageInput] = useState('');
   const [sendingMessage, setSendingMessage] = useState(false);
+  // メッセージ欄への移動用・履歴の自動スクロール用
+  const chatRef = useRef(null);
+  const chatListRef = useRef(null);
+  // 管理者の「案件情報を編集」画面
+  const [showEditModal, setShowEditModal] = useState(false);
+
+  useEffect(() => {
+    if (chatListRef.current) chatListRef.current.scrollTop = chatListRef.current.scrollHeight;
+  }, [messages]);
 
   const loadMessages = () => {
     setMessagesLoading(true);
@@ -391,7 +401,8 @@ export default function DetailPage({ projectId, onBack, addToast, onRefresh }) {
   if (!project) return <div className="empty-state">案件が見つかりません</div>;
 
   const isAdmin = user.role === 'admin';
-  const isOwner = project.sales_rep === user.name;
+  // 本人の案件：担当営業 または 依頼した営業（日程確定で担当営業が変わっても、依頼した本人は引き続き見られる）
+  const isOwner = user.role === 'sales' && (project.sales_rep === user.name || project.requested_by === user.name);
   const isCancelled = project.status === 'cancelled';
   const isConfirmed = project.status === 'confirmed';
   const isDelivered = project.status === 'delivered';
@@ -608,7 +619,29 @@ export default function DetailPage({ projectId, onBack, addToast, onRefresh }) {
       <div style={{ display:'flex',alignItems:'center',gap:12,marginBottom:20 }}>
         <button className="btn btn-ghost btn-sm" onClick={onBack}>← 戻る</button>
         <StatusBadge status={project.status} />
+        <div style={{ marginLeft:'auto', display:'flex', gap:6, flexWrap:'wrap', justifyContent:'flex-end' }}>
+          {(isOwner || isAdmin) && (
+            <button className="btn btn-ghost btn-sm" onClick={() => chatRef.current?.scrollIntoView({ behavior:'smooth', block:'start' })}>
+              💬 メッセージ{messages.length ? `（${messages.length}）` : ''}
+            </button>
+          )}
+          {isAdmin && project.status !== 'cancelled' && (
+            <button className="btn btn-ghost btn-sm" onClick={() => setShowEditModal(true)}>✏️ 編集</button>
+          )}
+        </div>
       </div>
+      {showEditModal && (
+        <ProjectEditModal
+          project={project}
+          onClose={() => setShowEditModal(false)}
+          onSaved={(updated) => {
+            if (updated) setProject(p => ({ ...p, ...updated, candidates: p.candidates }));
+            setShowEditModal(false);
+            onRefresh();
+          }}
+          addToast={addToast}
+        />
+      )}
       <div className="page-title">{project.project_type || '—'}</div>
       <div className="page-sub">{project.client_name}</div>
 
@@ -671,6 +704,9 @@ export default function DetailPage({ projectId, onBack, addToast, onRefresh }) {
           </div>
         )}
         <div className="meta-item"><div className="meta-label">担当営業</div><div className="meta-value">{project.sales_rep}</div></div>
+        {project.requested_by && project.requested_by !== project.sales_rep && (
+          <div className="meta-item"><div className="meta-label">依頼した営業</div><div className="meta-value">{project.requested_by}</div></div>
+        )}
         <div className="meta-item"><div className="meta-label">納品方法</div><div className="meta-value">{DELIVERY_LABELS[project.delivery_method]||'—'}</div></div>
         <div className="meta-item"><div className="meta-label">ステータス</div><div className="meta-value">{STATUS_MAP[project.status]?.label??project.status}</div></div>
         <div className="meta-item"><div className="meta-label">希望候補日数</div><div className="meta-value">{maxDays}日</div></div>
@@ -971,11 +1007,14 @@ export default function DetailPage({ projectId, onBack, addToast, onRefresh }) {
 
       {/* メッセージ（営業⇔管理者のやり取り） */}
       {(isOwner || isAdmin) && (
-        <div className="card">
+        <div className="card" ref={chatRef} style={{ scrollMarginTop: 70 }}>
           <div className="section-title">💬 メッセージ（営業・管理者間の連絡）</div>
-          <div style={{
+          <div style={{ fontSize:'0.72rem', color:'var(--text-sub)', marginTop:-6, marginBottom:8 }}>
+            {messages.length ? `これまでのやり取り ${messages.length}件（古い順・最新が一番下）` : '仮スケ設定後・日程確定後も、この欄でやり取りできます'}
+          </div>
+          <div ref={chatListRef} style={{
             display:'flex', flexDirection:'column', gap:8,
-            maxHeight:280, overflowY:'auto', marginBottom:12,
+            maxHeight:380, overflowY:'auto', marginBottom:12,
             padding: messages.length ? '4px 2px' : 0,
           }}>
             {messagesLoading ? (
