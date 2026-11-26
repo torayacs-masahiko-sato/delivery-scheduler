@@ -481,7 +481,7 @@ function createAuth({ pool, bcrypt, express }) {
     if (/^\/users\/[^/]+\/passkeys(\/|$)/.test(p)) return true;   // 他人の登録端末の確認・削除は管理者のみ
     if (method !== 'GET' && /^\/(users|cs-members|blocked-dates)(\/|$)/.test(p)) return true;
     // 案件の管理者専用操作（候補日の追加・編集・削除・設定完了、確定後のCS変更、日程確定の催促）
-    if (/^\/projects\/[^/]+\/(candidates|cs-members|remind-confirm)(\/|$)/.test(p)) return true;
+    if (/^\/projects\/[^/]+\/(candidates|cs-members|remind-confirm|confirmed-date)(\/|$)/.test(p)) return true;
     return false;
   };
   async function guard(req, res, next) {

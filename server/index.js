@@ -301,6 +301,22 @@ CS担当者：{{cs_members}}
 
 ▼ 下のボタンからこの案件をすぐに確認できます（ログイン後、自動でこの案件が開きます）`
   },
+  schedule_changed: {
+    subject: '【日程変更】{{project_type}}（{{client_name}}）',
+    body: `確定済み案件の日程が管理者により変更されました。
+
+案件内容：{{project_type}}
+顧客名：{{client_name}}
+案件ID：{{case_id}}
+担当営業：{{sales_rep}}
+CS担当：{{cs_members}}
+変更前の日時：{{old_confirmed_date}}
+変更後の日時：{{new_confirmed_date}}
+
+予定の変更をお願いします。
+
+▼ 下のボタンからこの案件をすぐに確認できます（ログイン後、自動でこの案件が開きます）`
+  },
 };
 
 async function getEmailTemplates() {
@@ -623,6 +639,10 @@ async function initDB() {
     `).catch(() => {});
     await client.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS case_id TEXT`);
     await client.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS client_url TEXT DEFAULT ''`);
+    // 依頼した営業（案件登録時の担当営業）。日程確定で担当営業が別の人に変わっても、
+    // 依頼した本人が引き続き案件・メッセージを見られるようにするため
+    await client.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS requested_by TEXT`);
+    await client.query(`UPDATE projects SET requested_by = sales_rep WHERE requested_by IS NULL`);
     // 自動キャンセルの事前警告を送った日時（同じ案件に警告メールを何度も送らないため）
     await client.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS auto_cancel_warned_at TIMESTAMPTZ`);
     // パスワード変更日時（これより前に発行されたログインを無効にするため）
@@ -717,7 +737,7 @@ app.use('/api', auth.guard);   // /api は ログイン必須（ログイン系�
 app.use(auth.router);
 
 // ── ユーザー共通ヘルパー ──────────────────────────────────────
-// 表示名が他の人と重複していないか（案件とは表示名で結び付いているため、重複すると案件が混ざる）
+// 同じ表示名の人が他にいるか（同じ表示名の登録は許可している。表示名変更時の案件の付け替え判定に使う）
 async function isDisplayNameTaken(displayName, exceptId = null) {
   const { rows } = await pool.query(
     'SELECT id FROM users WHERE (display_name=$1 OR name=$1) AND ($2::text IS NULL OR id<>$2)', [displayName, exceptId]);
@@ -729,6 +749,8 @@ async function upsertUser(id, { display_name, login_id, password, email, area })
   const { rows: before } = await pool.query('SELECT role, display_name, name FROM users WHERE id=$1', [id]);
   const oldName = before[0]?.display_name || before[0]?.name || '';
   const newName = display_name && display_name.trim() ? display_name.trim() : null;
+  // 旧い表示名を他の人も使っている場合、案件がどちらの人のものか区別できないため付け替えない
+  const oldNameShared = oldName ? await isDisplayNameTaken(oldName, id) : false;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -743,10 +765,12 @@ async function upsertUser(id, { display_name, login_id, password, email, area })
     );
     // 表示名を変えた場合、その名前で結び付いている案件・候補日も新しい名前に付け替える
     // （以前は付け替えておらず、名前を変えると自分の案件が見えなくなり通知メールも届かなかった）
-    if (newName && oldName && newName !== oldName) {
+    // ただし同じ表示名の人が他にいる場合は、誰の案件か区別できないため付け替えない
+    if (newName && oldName && newName !== oldName && !oldNameShared) {
       const role = before[0].role;
       if (role === 'sales') {
         await client.query('UPDATE projects SET sales_rep=$1 WHERE sales_rep=$2', [newName, oldName]);
+        await client.query('UPDATE projects SET requested_by=$1 WHERE requested_by=$2', [newName, oldName]);
         await client.query('UPDATE schedule_candidates SET sales_rep=$1 WHERE sales_rep=$2', [newName, oldName]);
       }
       if (role === 'cs') {
@@ -775,7 +799,6 @@ app.post('/api/users', async (req, res) => {
   if (!display_name || !login_id || !password) return res.status(400).json({ error: '表示名・ログインID・パスワードは必須です' });
   const dup = await pool.query('SELECT id FROM users WHERE login_id=$1', [login_id]);
   if (dup.rows[0]) return res.status(400).json({ error: 'このログインIDはすでに使われています' });
-  if (await isDisplayNameTaken(display_name.trim())) return res.status(400).json({ error: 'この表示名はすでに使われています（同姓同名の場合は「山田 太郎（東京）」のように区別してください）' });
   const id = uuidv4();
   const hashedPassword = await bcrypt.hash(password, 10);
   await pool.query('INSERT INTO users (id,name,display_name,login_id,role,password,email,area) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
@@ -790,9 +813,6 @@ app.put('/api/users/:id', async (req, res) => {
   if (login_id) {
     const dup = await pool.query('SELECT id FROM users WHERE login_id=$1 AND id!=$2', [login_id, req.params.id]);
     if (dup.rows[0]) return res.status(400).json({ error: 'このログインIDはすでに使われています' });
-  }
-  if (display_name && display_name.trim() && await isDisplayNameTaken(display_name.trim(), req.params.id)) {
-    return res.status(400).json({ error: 'この表示名はすでに使われています（同姓同名の場合は「山田 太郎（東京）」のように区別してください）' });
   }
   await upsertUser(req.params.id, { display_name, login_id, password, email, area });
   const { rows: u } = await pool.query('SELECT id,display_name,login_id,email,area FROM users WHERE id=$1', [req.params.id]);
@@ -816,7 +836,6 @@ app.post('/api/admins', async (req, res) => {
   if (!display_name || !login_id || !password) return res.status(400).json({ error: '表示名・ログインID・パスワードは必須です' });
   const dup = await pool.query('SELECT id FROM users WHERE login_id=$1', [login_id]);
   if (dup.rows[0]) return res.status(400).json({ error: 'このログインIDはすでに使われています' });
-  if (await isDisplayNameTaken(display_name.trim())) return res.status(400).json({ error: 'この表示名はすでに使われています（同姓同名の場合は「山田 太郎（東京）」のように区別してください）' });
   const id = uuidv4();
   const hashedPassword = await bcrypt.hash(password, 10);
   await pool.query('INSERT INTO users (id,name,display_name,login_id,role,password,email,area) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
@@ -831,9 +850,6 @@ app.put('/api/admins/:id', async (req, res) => {
   if (login_id) {
     const dup = await pool.query('SELECT id FROM users WHERE login_id=$1 AND id!=$2', [login_id, req.params.id]);
     if (dup.rows[0]) return res.status(400).json({ error: 'このログインIDはすでに使われています' });
-  }
-  if (display_name && display_name.trim() && await isDisplayNameTaken(display_name.trim(), req.params.id)) {
-    return res.status(400).json({ error: 'この表示名はすでに使われています（同姓同名の場合は「山田 太郎（東京）」のように区別してください）' });
   }
   await upsertUser(req.params.id, { display_name, login_id, password, email, area });
   const { rows: u } = await pool.query('SELECT id,display_name,login_id,email,area FROM users WHERE id=$1', [req.params.id]);
@@ -859,7 +875,6 @@ app.post('/api/cs-members', async (req, res) => {
   if (!display_name || !login_id || !password) return res.status(400).json({ error: '表示名・ログインID・パスワードは必須です' });
   const dup = await pool.query('SELECT id FROM users WHERE login_id=$1', [login_id]);
   if (dup.rows[0]) return res.status(400).json({ error: 'このログインIDはすでに使われています' });
-  if (await isDisplayNameTaken(display_name.trim())) return res.status(400).json({ error: 'この表示名はすでに使われています（同姓同名の場合は「山田 太郎（東京）」のように区別してください）' });
   const id = uuidv4();
   const hashedPassword = await bcrypt.hash(password, 10);
   await pool.query('INSERT INTO users (id,name,display_name,login_id,role,password,email,area) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
@@ -874,9 +889,6 @@ app.put('/api/cs-members/:id', async (req, res) => {
   if (login_id) {
     const dup = await pool.query('SELECT id FROM users WHERE login_id=$1 AND id!=$2', [login_id, req.params.id]);
     if (dup.rows[0]) return res.status(400).json({ error: 'このログインIDはすでに使われています' });
-  }
-  if (display_name && display_name.trim() && await isDisplayNameTaken(display_name.trim(), req.params.id)) {
-    return res.status(400).json({ error: 'この表示名はすでに使われています（同姓同名の場合は「山田 太郎（東京）」のように区別してください）' });
   }
   await upsertUser(req.params.id, { display_name, login_id, password, email, area });
   const { rows: u } = await pool.query('SELECT id,display_name,login_id,email,area FROM users WHERE id=$1', [req.params.id]);
@@ -999,7 +1011,10 @@ const parseCandidate = (c) => ({ ...c, cs_members: parseJsonArray(c.cs_members) 
 // ── 権限判定（ログイン中の本人情報 req.auth で判定。画面から送られた名前は信用しない）──
 // 管理者・CS部員：全案件を閲覧可 ／ 営業：自分が担当営業の案件のみ（画面の表示ルールと同じ）
 const isAdminReq = (req) => req.auth?.role === 'admin';
-const isOwnerReq = (req, p) => req.auth?.role === 'sales' && !!p && p.sales_rep === req.auth.name;
+const isOwnerReq = (req, p) => req.auth?.role === 'sales' && !!p
+  && (p.sales_rep === req.auth.name || p.requested_by === req.auth.name);
+// SQL用：営業が「自分の案件」として扱う条件（担当営業 or 依頼した営業）
+const OWN_SQL = '(sales_rep=$1 OR requested_by=$1)';
 const canViewProject = (req, p) => isAdminReq(req) || req.auth?.role === 'cs' || isOwnerReq(req, p);
 const NO_VIEW = { error: 'この案件を表示する権限がありません' };
 const NO_EDIT = { error: 'この案件を操作する権限がありません' };
@@ -1042,7 +1057,7 @@ app.get('/api/projects', async (req, res) => {
   // 営業は自分の担当案件だけを返す（他の営業の顧客情報を渡さない）
   const salesOnly = req.auth.role === 'sales';
   const { rows: projects } = salesOnly
-    ? await pool.query('SELECT * FROM projects WHERE sales_rep=$1 ORDER BY updated_at DESC', [req.auth.name])
+    ? await pool.query(`SELECT * FROM projects WHERE ${OWN_SQL} ORDER BY updated_at DESC`, [req.auth.name])
     : await pool.query('SELECT * FROM projects ORDER BY updated_at DESC');
   const ids = projects.map(p => p.id);
   const { rows: candidates } = ids.length
@@ -1080,7 +1095,7 @@ app.post('/api/projects', async (req, res) => {
   const id = uuidv4();
   const case_id = await generateCaseId();
   await pool.query(
-    `INSERT INTO projects (id,case_id,client_name,project_type,sales_rep,memo,client_url,client_urls,delivery_method,candidate_days,status,cs_members) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'pending','[]')`,
+    `INSERT INTO projects (id,case_id,client_name,project_type,sales_rep,requested_by,memo,client_url,client_urls,delivery_method,candidate_days,status,cs_members) VALUES ($1,$2,$3,$4,$5,$5,$6,$7,$8,$9,$10,'pending','[]')`,
     [id, case_id, client_name, project_type, sales_rep, memo || '',
      urls.list[0]?.url || '',            // 旧項目にも先頭URLを入れておく（互換用）
      JSON.stringify(urls.list), delivery_method || 'remote', candidate_days || 1]
@@ -1122,6 +1137,24 @@ app.put('/api/projects/:id', async (req, res) => {
   const { rows: ex } = await pool.query('SELECT * FROM projects WHERE id=$1', [req.params.id]);
   if (!ex[0]) return res.status(404).json({ error: '案件が見つかりません' });
   const p = ex[0];
+  // 項目ごとの入力チェック（送られてきた項目だけ）
+  if (client_name !== undefined && !String(client_name).trim()) return res.status(400).json({ error: '顧客名を入力してください' });
+  if (client_name !== undefined && String(client_name).trim().length > 100) return res.status(400).json({ error: '顧客名は100文字以内で入力してください' });
+  if (project_type !== undefined && !String(project_type).trim()) return res.status(400).json({ error: '案件内容を1つ以上選択してください' });
+  if (delivery_method !== undefined && !['remote', 'onsite'].includes(delivery_method)) return res.status(400).json({ error: '納品方法の指定が正しくありません' });
+  if (sales_rep !== undefined && sales_rep !== p.sales_rep) {
+    const { rows: su } = await pool.query("SELECT id FROM users WHERE role='sales' AND display_name=$1", [String(sales_rep).trim()]);
+    if (!su[0]) return res.status(400).json({ error: '担当営業は登録済みの営業メンバーから選択してください' });
+  }
+  if (candidate_days !== undefined) {
+    if (!['pending', 'scheduled'].includes(p.status)) {
+      return res.status(400).json({ error: '希望候補日数は、候補日待ち・仮スケ設定済みの案件のみ変更できます' });
+    }
+    const { rows: cc } = await pool.query('SELECT COUNT(*)::int AS c FROM schedule_candidates WHERE project_id=$1', [req.params.id]);
+    if (Number(candidate_days) < cc[0].c) {
+      return res.status(400).json({ error: `登録済みの候補日（${cc[0].c}件）より少なくはできません` });
+    }
+  }
   // 管理者以外は「自分が担当営業の案件」の、備考・関連URLなど基本情報のみ変更できる
   if (!isAdminReq(req)) {
     if (!isOwnerReq(req, p)) return res.status(403).json(NO_EDIT);
@@ -1133,7 +1166,9 @@ app.put('/api/projects/:id', async (req, res) => {
   const csMembersJson = cs_members !== undefined ? JSON.stringify(cs_members) : p.cs_members;
   await pool.query(
     `UPDATE projects SET client_name=$1,project_type=$2,sales_rep=$3,memo=$4,status=$5,confirmed_date=$6,delivery_method=$7,candidate_days=$8,cs_members=$9,client_url=$10,client_urls=$11,shortage_reason=$12,updated_at=NOW() WHERE id=$13`,
-    [client_name??p.client_name, project_type??p.project_type, sales_rep??p.sales_rep, memo??p.memo,
+    [client_name !== undefined ? String(client_name).trim() : p.client_name,
+     project_type !== undefined ? String(project_type).trim() : p.project_type,
+     sales_rep !== undefined ? String(sales_rep).trim() : p.sales_rep, memo??p.memo,
      status??p.status, confirmed_date??p.confirmed_date, delivery_method??p.delivery_method, candidate_days??p.candidate_days, csMembersJson,
      firstUrl !== undefined ? firstUrl : p.client_url,
      urlsJson !== undefined ? urlsJson : (p.client_urls || '[]'),
@@ -1323,6 +1358,39 @@ app.post('/api/projects/:id/confirm-schedule', async (req, res) => {
   res.json(project);
 });
 
+// 確定済み案件の確定日時を変更（管理者のみ）。notify=true なら担当営業・依頼した営業・CS担当へ変更通知
+app.put('/api/projects/:id/confirmed-date', async (req, res) => {
+  if (!isAdminReq(req)) return res.status(403).json({ error: 'この操作は管理者のみ可能です' });
+  const { date, time, notify } = req.body || {};
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date || ''))) return res.status(400).json({ error: '確定日を正しく入力してください' });
+  if (time && !/^\d{2}:\d{2}$/.test(String(time))) return res.status(400).json({ error: '時刻を正しく入力してください' });
+  const { rows } = await pool.query('SELECT * FROM projects WHERE id=$1', [req.params.id]);
+  if (!rows[0]) return res.status(404).json({ error: '案件が見つかりません' });
+  const p = parseProject(rows[0]);
+  if (p.status !== 'confirmed') return res.status(400).json({ error: '確定済みの案件のみ確定日時を変更できます' });
+  const newDate = time ? `${date} ${time}` : date;   // 日程確定時と同じ形式
+  const oldDate = p.confirmed_date || '';
+  if (newDate === oldDate) return res.json({ ...p, candidates: [] });
+  await pool.query('UPDATE projects SET confirmed_date=$1, updated_at=NOW() WHERE id=$2', [newDate, req.params.id]);
+  const { rows: updated } = await pool.query('SELECT * FROM projects WHERE id=$1', [req.params.id]);
+  const project = { ...parseProject(updated[0]), candidates: [] };
+  if (notify) {
+    try {
+      const names = [...new Set([p.sales_rep, p.requested_by].filter(Boolean))];
+      const lists = await Promise.all(names.map(n => buildRecipients(n, p.cs_members || [])));
+      const allTo = [...new Set(lists.flat())];
+      if (allTo.length) {
+        await sendTemplatedEmail('schedule_changed', allTo, {
+          case_id: p.case_id || '', project_type: p.project_type, client_name: p.client_name, sales_rep: p.sales_rep,
+          cs_members: (p.cs_members || []).join('、') || 'なし',
+          old_confirmed_date: oldDate, new_confirmed_date: newDate, detail_url: buildDetailUrl(p.id),
+        });
+      }
+    } catch (e) { console.error('[日程変更メール送信エラー]', e.message); }
+  }
+  res.json(project);
+});
+
 // 確定済み案件のCS担当者を変更（管理者のみ・変更通知メール送信）
 app.put('/api/projects/:id/cs-members', async (req, res) => {
   const { cs_members } = req.body;
@@ -1449,7 +1517,7 @@ app.post('/api/projects/:id/remind-confirm', async (req, res) => {
 
 // ── 案件ごとのメッセージ（営業⇔管理者のやり取り） ──────────────
 app.get('/api/projects/:id/messages', async (req, res) => {
-  const { rows: proj } = await pool.query('SELECT sales_rep FROM projects WHERE id=$1', [req.params.id]);
+  const { rows: proj } = await pool.query('SELECT sales_rep, requested_by FROM projects WHERE id=$1', [req.params.id]);
   if (!proj[0]) return res.status(404).json({ error: '案件が見つかりません' });
   if (!isAdminReq(req) && !isOwnerReq(req, proj[0])) return res.status(403).json(NO_VIEW);
   const { rows } = await pool.query(
@@ -1486,8 +1554,9 @@ app.post('/api/projects/:id/messages', async (req, res) => {
     const adminEmails = await getAdminEmailsByArea(salesArea);
     let allTo = [];
     if (sender_role === 'admin') {
-      const salesEmail = await getSalesEmail(p.sales_rep);
-      allTo = salesEmail ? [salesEmail] : [];
+      const names = [...new Set([p.sales_rep, p.requested_by].filter(Boolean))];
+      const emails = await Promise.all(names.map(n => getSalesEmail(n)));
+      allTo = [...new Set(emails.filter(Boolean))];
     } else {
       allTo = [...new Set([...(settings.notify_emails || []), ...adminEmails])];
     }
@@ -1539,7 +1608,7 @@ async function runAutoCancel() {
 
 app.delete('/api/projects/:id', async (req, res) => {
   // 管理者：全案件 ／ 営業：自分の担当案件のみ ／ CS部員：不可
-  const { rows: proj } = await pool.query('SELECT sales_rep FROM projects WHERE id=$1', [req.params.id]);
+  const { rows: proj } = await pool.query('SELECT sales_rep, requested_by FROM projects WHERE id=$1', [req.params.id]);
   if (!proj[0]) return res.status(404).json({ error: '案件が見つかりません' });
   if (!isAdminReq(req) && !isOwnerReq(req, proj[0])) return res.status(403).json({ error: '自分が担当する案件のみ削除できます' });
   await pool.query('DELETE FROM projects WHERE id=$1', [req.params.id]);
@@ -1558,7 +1627,7 @@ app.post('/api/projects/bulk-delete', async (req, res) => {
   let targetIds = ids;
   if (!isAdminReq(req)) {
     const { rows: ownedProjects } = await pool.query(
-      'SELECT id FROM projects WHERE id = ANY($1) AND sales_rep=$2', [ids, req.auth.name]);
+      'SELECT id FROM projects WHERE id = ANY($1) AND (sales_rep=$2 OR requested_by=$2)', [ids, req.auth.name]);
     targetIds = ownedProjects.map(p => p.id);
     if (targetIds.length === 0) {
       return res.status(403).json({ error: '削除できる案件がありません（自分が担当する案件のみ削除できます）' });
@@ -1580,7 +1649,7 @@ app.post('/api/projects/delete-by-status', async (req, res) => {
 
   // 営業は自分の担当案件のみ削除（他営業の案件は対象外）
   if (!isAdminReq(req)) {
-    const { rowCount } = await pool.query('DELETE FROM projects WHERE status=$1 AND sales_rep=$2', [status, req.auth.name]);
+    const { rowCount } = await pool.query('DELETE FROM projects WHERE status=$1 AND (sales_rep=$2 OR requested_by=$2)', [status, req.auth.name]);
     return res.json({ success: true, deleted: rowCount });
   }
 
@@ -1596,7 +1665,7 @@ app.get('/api/stats', async (req, res) => {
            COUNT(*) FILTER (WHERE status='scheduled') AS scheduled,
            COUNT(*) FILTER (WHERE status='confirmed') AS confirmed,
            COUNT(*) FILTER (WHERE status='delivered') AS delivered
-    FROM projects ${salesOnly ? 'WHERE sales_rep=$1' : ''}
+    FROM projects ${salesOnly ? 'WHERE ' + OWN_SQL : ''}
   `, salesOnly ? [req.auth.name] : []);
   const r = rows[0];
   res.json({ total: +r.total, pending: +r.pending, scheduled: +r.scheduled, confirmed: +r.confirmed, delivered: +r.delivered });
