@@ -820,3 +820,61 @@ textarea { resize: vertical; min-height: 80px; }
   .topbar-logo { font-size: 0.95rem; }
   .topbar-user { max-width: 52px; font-size: 0.74rem; }
 }
+
+/* ── 案件一覧（表形式） ───────────────────── */
+.main-content.main-wide { max-width: 1600px; }
+.loading { padding: 40px 0; text-align: center; color: var(--text-sub); }
+.list-filters { padding: 14px; margin-bottom: 10px; }
+.list-filter-row { display: flex; flex-wrap: wrap; gap: 8px 10px; }
+.list-filter-row + .list-filter-row { margin-top: 10px; }
+.list-field { display: flex; flex-direction: column; gap: 3px; font-size: 0.7rem; color: var(--text-sub); min-width: 140px; flex: 1 1 140px; }
+.list-field-wide { flex: 2 1 220px; }
+.list-field select, .list-field input { font-size: 0.85rem; padding: 7px 10px; }
+.list-count { font-size: 0.8rem; color: var(--text-sub); margin: 4px 2px 8px; }
+.list-hint { font-size: 0.72rem; color: var(--text-sub); margin: 8px 2px 90px; }
+
+/* 表は左右スクロール。見出し行と案件ID列は固定して、スクロールしても見失わないようにする */
+.table-wrap {
+  overflow: auto;
+  max-height: calc(100dvh - 300px);
+  min-height: 240px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 10px);
+  background: var(--card-bg);
+  -webkit-overflow-scrolling: touch;
+}
+.data-table { border-collapse: separate; border-spacing: 0; width: max-content; min-width: 100%; font-size: 0.8rem; }
+.data-table th, .data-table td {
+  padding: 8px 10px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top;
+  white-space: nowrap; color: var(--text);
+}
+.data-table th {
+  position: sticky; top: 0; z-index: 2; cursor: pointer; user-select: none;
+  background: var(--navy-mid, var(--glass-bg)); color: var(--text-sub); font-weight: 600; font-size: 0.74rem;
+}
+.data-table .sticky-col { position: sticky; left: 0; z-index: 1; background: var(--navy-mid, var(--card-bg)); }
+.data-table th.sticky-col { z-index: 3; }
+.data-table .data-row { cursor: pointer; }
+.data-table .data-row:hover td { background: var(--overlay-hover, rgba(59,130,246,0.08)); }
+.data-table .memo-cell { white-space: normal; min-width: 180px; max-width: 280px; }
+.data-table .strong { font-weight: 600; }
+.data-table .mono { font-variant-numeric: tabular-nums; }
+.data-table .center { text-align: center; }
+.data-table .muted { color: var(--text-sub); }
+.data-table a { color: var(--accent-lt, var(--accent)); }
+.data-table .empty-cell { text-align: center; color: var(--text-sub); padding: 28px; }
+.data-table .group-row td {
+  position: sticky; left: 0; background: var(--navy-lt, var(--glass-bg)); padding: 8px 12px;
+  box-shadow: inset 3px 0 0 var(--accent);
+  border-bottom: 1px solid var(--border);
+}
+.group-title { font-weight: 700; font-size: 0.86rem; margin-right: 10px; }
+.group-count { font-size: 0.74rem; color: var(--text-sub); }
+@media (max-width: 600px) {
+  .list-field { min-width: calc(50% - 5px); flex: 1 1 calc(50% - 5px); }
+  .list-field-wide { min-width: 100%; }
+  .table-wrap { max-height: calc(100dvh - 240px); }
+}
+
+.list-filter-toggle { width: 100%; justify-content: flex-start; gap: 8px; margin-bottom: 8px; text-align: left; flex-wrap: wrap; }
+.list-filter-summary { color: var(--text-sub); font-size: 0.74rem; font-weight: 400; }
